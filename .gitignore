@@ -1,0 +1,93 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Cython debug symbols
+cython_debug/
+
+# Doxygen
+**/doc/*
+!/doc/resources/
+
+# VS Code
+**/.vscode/*
+!**/.vscode/settings.json
+!**/.vscode/tasks.json
+!**/.vscode/launch.json
+!**/.vscode/extensions.json
+!**/.vscode/*.code-snippets
+!**/.vscode/c_cpp_properties.json
+**/.history/
+**/*.vsix
+**/test/test_examples/ifj24code_examples/ifj24code_output/*
+**/test/tests_by_fifixsandy/out
+
+# Build system
+**/build/*
+**/build_test/*
+**/build_coverage/*
+
+# General folders and files
+**/ipp-core/.git
+**/sandbox/*
+**/backup/*
+**/raw/*
+**/out/*
+*.doc
+*.docx
+**/pack/*
+**/odevzdani/*
+**/parsing_table/*
+!info/*.docx

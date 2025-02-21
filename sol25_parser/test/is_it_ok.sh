@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 
 # pouziti:   is_it_ok.sh xlogin01-XYZ.zip testdir [task-num] [--force]
-#  
+#
 #   - POZOR: obsah adresare zadaneho druhym parametrem bude po dotazu VYMAZAN (nebo s volbou --force)!
 #   - rozbali archiv studenta xlogin99.zip do adresare testdir a overi formalni pozadavky pro odevzdani projektu IPP
-#   - cislo ulohy (task-num) je nepovinny parametr (mozne hodnoty: 1 nebo 2) 
+#   - cislo ulohy (task-num) je nepovinny parametr (mozne hodnoty: 1 nebo 2)
 #   - nasledne vyzkousi spusteni
 #   - detaily prubehu jsou logovany do souboru is_it_ok.log v adresari testdir
 
 # Autor: Zbynek Krivka
-# Verze: 1.5.8 (2025-02-13)
+# Verze: 1.5.9 (2025-02-18)
 #  2012-04-03  Zverejnena prvni verze
 #  2012-04-09  Pridana kontrola tretiho radku (prispel Vilem Jenis) a maximalni velikosti archivu
 #  2012-04-26  Oprava povolenych pripon archivu, aby to odpovidalo pozadavkum v terminu ve WIS
@@ -25,12 +25,13 @@
 #  2019-02-12  Uprava jmen a podporovanych formatu dokumentace (pdf|md)
 #  2020-01-30  Aktualizace prikazu pro PHP 7.4 a Python 3.8
 #  2022-02-03  Aktualizace prikazu pro PHP 8.1, rozsireni NVP, NVI
-#  2023-02-08  Skript vraci navratove kody (0=vse OK, 1=vyskytla se chyba v archivu, 2=spatne parametry/vstupyz, 3=spatna pripona skriptu), 
-#              Novy parametr --force (prepis existujiciho adresare).  
+#  2023-02-08  Skript vraci navratove kody (0=vse OK, 1=vyskytla se chyba v archivu, 2=spatne parametry/vstupyz, 3=spatna pripona skriptu),
+#              Novy parametr --force (prepis existujiciho adresare).
 #              Zruseno rozsireni NVI a FILES.
 #  2023-04-08  Aktualizace prikazu pro Python 3.10
 #  2024-02-03  Upravy dle zadani pro 2024 a podpora tbz, podpora php8.3, podpora ipp-core (adresar student)
-#  2025-02-13  Podpora prikazu php8.4 i php
+#  2025-02-13  Podpora prikazu php8.4 i php a python3.11
+#  2025-02-18  Oprava regularniho vyrazu pro kontrolu jmena archivu
 
 LOG="is_it_ok.log"
 MAX_ARCHIVE_SIZE=1100000
@@ -38,7 +39,7 @@ COURSE="IPP"
 PHP_INTERPRET="php8.4"
 PHP_INTERPRET_NOMERLIN="php"
 PYTHON_INTERPRET="python3.11"
-PYTHON_INTERPRET_NOMERLIN="python"
+PYTHON_INTERPRET_NOMERLIN="python3.11"
 PARSESCRIPT="parse.py"
 INTERPRETSCRIPT="interpret.php"
 INTERPRETERCLASS="Interpreter.php"
@@ -68,13 +69,13 @@ function echo_color () { # $1=color $2=text [$3=-n]
 function member ()
 {
   local -a arr=($*)
-  for i in $(seq 1 $#); 
+  for i in $(seq 1 $#);
   do
     if [ "${arr[$i]}" = "$1" ];
     then
       return 0
     fi
-  done  
+  done
   return 1
 }
 
@@ -111,11 +112,11 @@ if [[ -n $3 ]]; then
     else
       echo_color red "ERROR (Unsupported task number: $3 not in {1, 2})"
       exit 2
-    fi 
+    fi
     if [[ -n $4 ]]; then
       if [[ $4 = "--force" ]]; then
         FORCE=1
-      fi      
+      fi
     fi
   fi
 fi
@@ -124,27 +125,29 @@ fi
 function unpack_archive () {
   local ext=`echo $1 | cut -d . -f 2,3`
   echo -n "Archive extraction: "
-  RETCODE=100  
+  RETCODE=100
   if [[ "$ext" = "zip" ]]; then
     unzip -o $1 >> $LOG 2>&1
     RETCODE=$?
   elif [[ "$ext" = "gz" || "$ext" = "tgz" || "$ext" = "tar.gz" ]]; then
     tar xfz $1 >> $LOG 2>&1
-      RETCODE=$? 
+      RETCODE=$?
     elif [[ "$ext" = "tbz2" || "$ext" = "tbz" || "$ext" = "tar.bz2" ]]; then
       tar xfj $1 >> $LOG 2>&1
-      RETCODE=$? 
+      RETCODE=$?
   fi
   if [[ $RETCODE -eq 0 ]]; then
     echo_color green OK
   elif [[ $RETCODE -eq 100 ]]; then
     echo_color red "ERROR (unsupported extension)"
+    let ERROR=ERROR+1
     exit 1
   else
     echo_color red "ERROR (code $RETCODE)"
+    let ERROR=ERROR+1
     exit 1
   fi
-} 
+}
 
 #   Priprava testdir
 if [[ -d $2 ]]; then
@@ -191,7 +194,7 @@ if [[ $TASK -eq 2 ]]; then
 fi
 touch $LOG
 ARCHIVE=`basename $1`
-NAME=`echo $ARCHIVE | cut -d . -f 1 | egrep "(^x[a-z]{5}[0-9][0-9a-z]$)"`
+NAME=`echo $ARCHIVE | cut -d . -f 1 | egrep "^x([a-z]{5,6}[a-z0-9][a-z0-9]|[0-9]{5,7})$"`
 echo -n "Archive name ($ARCHIVE): "
 if [[ -n $NAME ]]; then
   echo_color green "OK"
@@ -203,12 +206,12 @@ fi
 #   Kontrola velikosti archivu
 echo -n "Checking size of $ARCHIVE (from `pwd`): "
 ARCHIVE_SIZE=`du --bytes $ARCHIVE | cut -f 1`
-if [[ ${ARCHIVE_SIZE} -ge ${MAX_ARCHIVE_SIZE} ]]; then 
+if [[ ${ARCHIVE_SIZE} -ge ${MAX_ARCHIVE_SIZE} ]]; then
   echo_color red "ERROR (Too big (${ARCHIVE_SIZE} bytes > ${MAX_ARCHIVE_SIZE} bytes)"
-  
+
   let ERROR=ERROR+1
-else 
-  echo_color green "OK" 
+else
+  echo_color green "OK"
 fi
 
 #   Extrahovat do testdir
@@ -224,19 +227,20 @@ if [[ $TASK -eq 0 ]]; then
     echo_color blue "OK (readme1 found)"
   elif [ -f "readme2.pdf"  -o  -f "readme2.md" ]; then
     echo_color blue "OK (readme2 found)"
-  else  
+  else
     echo_color red "ERROR (not found; required readme1 or readme2!)"
     let ERROR=ERROR+1
   fi
 elif [ $TASK -eq 1 -o  $TASK -eq 2 ]; then
   if [ -f "readme${TASK}.pdf"  -o  -f "readme${TASK}.md" ]; then
     echo_color green "OK"
-  else  
+  else
     echo_color red "ERROR (not found!)"
     let ERROR=ERROR+1
   fi
 else
-  echo_color red "ERROR (not found!)"  
+  echo_color red "ERROR (not found!)"
+  let ERROR=ERROR+1
 fi
 #fi
 if [[ $TASK -eq 2 ]]; then
@@ -274,12 +278,12 @@ for SCRIPT in "${REQUIRED_SCRIPTS[@]}" "${NON_REQUIRED_SCRIPTS[@]}"; do
       #echo -n "  $SCRIPT: "
       echo_color red "ERROR (returns code $RETCODE)"
       let ERROR=ERROR+1
-    fi    
+    fi
   else
     if [[ $TASK -eq 0 ]]; then
       if [[ "$SCRIPT" = "$PARSESCRIPT" ]]; then
         echo_color blue "  $SCRIPT: ERROR (not found; required for 1st task only!)"
-        let ERROR=ERROR+1 
+        let ERROR=ERROR+1
       else
         echo_color blue "  $SCRIPT: ERROR (not found; required for 2nd task only!)"
         let ERROR=ERROR+1
@@ -288,12 +292,12 @@ for SCRIPT in "${REQUIRED_SCRIPTS[@]}" "${NON_REQUIRED_SCRIPTS[@]}"; do
       if ( member $SCRIPT ${REQUIRED_SCRIPTS[@]} ); then
         echo_color red "  $SCRIPT: ERROR (not found; required for task $TASK!)"
         let ERROR=ERROR+1
-      fi      
-    fi  
+      fi
+    fi
   fi
 done
 
-#   Kontrola 
+#   Kontrola
 if [[ $TASK -eq 2 ]]; then
   EXTENSIONS=$TASK2_SUBDIR/$EXTENSIONS
 fi
@@ -309,9 +313,9 @@ if [[ -f $EXTENSIONS ]]; then
   diff $EXTENSIONS $EXTENSIONS.lf >> $LOG 2>&1
   RETCODE=$?
   if [[ $RETCODE = "0" ]]; then
-    UNKNOWN=`cat $EXTENSIONS | grep -v -E -e "^(STATP|NVP|FLOAT|STACK|STATI)$" | wc -l`
+    UNKNOWN=`cat $EXTENSIONS | grep -v -E -e "^(NVP|CLASS)$" | wc -l`
     if [[ $UNKNOWN = "0" ]]; then
-      echo_color green "OK" 
+      echo_color green "OK"
     else
       echo_color red "ERROR (Unknown bonus identifier or redundant empty line)"
       let ERROR=ERROR+1
@@ -322,7 +326,7 @@ if [[ -f $EXTENSIONS ]]; then
   fi
 else
   echo "No"
-fi 
+fi
 
 #   Kontrola adresare __MACOSX a .git
 if [[ -d __MACOSX ]]; then
@@ -342,7 +346,7 @@ if [[ $ERROR -eq 0 ]]; then
 elif [[ $ERROR -eq 1 ]]; then
   echo_color red " WITH $ERROR ERROR!"
   # Vyskytla se chyba!
-  exit 1    
+  exit 1
 else
   echo_color red " WITH $ERROR ERRORS!"
   # Vyskytlo se vice chyb!

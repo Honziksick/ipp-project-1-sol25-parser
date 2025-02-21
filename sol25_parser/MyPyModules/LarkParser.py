@@ -20,33 +20,43 @@
 @details
 """
 
-from lark import Lark, Transformer
+import re
+from lark import Lark, Transformer, UnexpectedCharacters, UnexpectedToken, visitors
+from MyPyModules.CustomErrors import LexicalError, SyntaxError
 from MyPyModules.ASTNodes import ASTNodes as AST
 
-###################################################################################
-# Zdroj (manuál): lark-parser.readthedocs.io/en/latest/_static/lark_cheatsheet.pdf
-###################################################################################
+################################################################################
+#                                                                              #
+#                NĚKOLIK SPECIFIK ZÁPISU PARSERU V MODULU "lark"               #
+#                  Zdroj (manuál): lark-parser.readthedocs.io                  #
+#                                                                              #
+################################################################################
+# ==============================================================================
+# Konvence: gramatika je definována jako hodnota KONSTANTY
+#         : Terminály (tokeny) se zapisují velkými písmeny (v lark.Lark)
+#         : NEterminály se zapisují písmeny písmeny (v lark.Lark)
+#         : metody v lark.Transformer musí být pojmenovány stejně jako
+#           neterminál na levé straně pravidla, popř. terminál
+#         : u pravidla s více různými možnými pravými stranami oddělujeme
+#           pravé strany promocí '|'
+#         : uvnitř konstanty s gramatikou lze psát jednořádkové komentář
+#           uvzoené pomocí '//'
+#         : vyhazuje dva typy vyjímek 'UnexpectedCharacters' a 'UnexpectedToken'
+# ==============================================================================
+# _TERMINAL: ...   hodnota tokenu se neuloží do ParseTree díky prefixu '_'
+# ?non_term: ...   operátor '?' nevloží uzel pro toto pravidlo do ParseTree
+# X*               0 nebo více opakování X
+# X+               1 nebo více opakování X
+# X?               nanejvýš jednou (0 nebo 1 výskyt X), náhrada ε-pravidla
+# (X Y)*           0 nebo více opakování X Y
+# (X Y)+           1 nebo více opakování X Y
+# (X Y)?           nanejvýš jednou (0 nebo 1 výskyt X Y), náhrada ε-pravidla
+# (Keyword | Id)   POZOR, vyhodnocuje se zleva => 'Keyword' má vyšší prioritu
+# %ignore cokoliv  změní význam 'cokoliv' na bílý znak a při parsování odignoruje
+# ==============================================================================
 
 # Konstanta obsahující definici lexikálních a syntaktických pravidel SOL25
 SOL25_GRAMMAR = r"""
-    ////////////////////////////////////////////////////////////////////////////
-    //                                                                        //
-    //            NĚKOLIK SPECIFIK ZÁPISU PARSERU V MODULU "lark"             //
-    //                                                                        //
-    ////////////////////////////////////////////////////////////////////////////
-
-    // =========================================================================
-    // ?NonT: expand    operátor '?' nyvtvoří uzel v AST
-    // X*               0 nebo více opakování X
-    // X+               1 nebo více opakování X
-    // X?               nanejvýš jednou (0 nebo 1 výskyt X), náhrada ε-pravidla
-    // (X Y)*           0 nebo více opakování X Y
-    // (X Y)+           1 nebo více opakování X Y
-    // (X Y)?           nanejvýš jednou (0 nebo 1 výskyt X Y), náhrada ε-pravidla
-    // (Keyword | Id)   POZOR, vyhodnocuje se zleva => 'Keyword' má vyšší prioritu
-    // =========================================================================
-
-
     ////////////////////////////////////////////////////////////////////////////
     //                                                                        //
     //                   TERMINÁLY (tokeny) V JAZYCE SOL25                    //
@@ -54,75 +64,37 @@ SOL25_GRAMMAR = r"""
     ////////////////////////////////////////////////////////////////////////////
 
     // Klíčová slova
-    tClass:         "class"
-    tSelf:          "self"
-    tSuper:         "super"
-    tNil:           "nil"
-    tTrue:          "true"
-    tFalse:         "false"
+    _CLASS: "class"
+    SELF:  "self"
+    SUPER: "super"
+    NIL:   "nil"
+    TRUE:  "true"
+    FALSE: "false"
 
     // Speciální znaky
-    tColon:         ":"
-    tSemicolon:     ";"
-    tLeftRoundBr:   "("
-    tRightRoundBr:  ")"
-    tLeftCurlyBr:   "{"
-    tRightCurlyBr:  "}"
-    tLeftSquareBr:  "["
-    tRightSquareBr: "]"
-    tPipe:          "|"
-    tDot:           "."
+    _COLON:                ":"
+    _SEMICOLON:            ";"
+    _LEFT_ROUND_BRACKET:   "("
+    _RIGHT_ROUND_BRACKET:  ")"
+    _LEFT_CURLY_BRACKET:   "{"
+    _RIGHT_CURLY_BRACKET:  "}"
+    _LEFT_SQUARE_BRACKET:  "["
+    _RIGHT_SQUARE_BRACKET: "]"
+    _PIPE:                 "|"
+    _DOT:                  "."
 
     // Operátory
-    tAssignOp:      ":="
-
-    // Identifikátory
-    tId:            /[a-z_][A-Za-z0-9_]*/
-    tIdSelector:    /[a-z_][A-Za-z0-9_]*:/
-    tSelectorId:    /:[a-z_][A-Za-z0-9_]*/
-    tCid:           /[A-Z][A-Za-z0-9]*/
-    CID:            (BUILT_IN_CLASS | tCid)
+    _WALRUS: ":="
 
     // Literály
-    tIntLiteral:    /[+-]?\d+/
-    tStringLiteral: /'(\\.|[^'\\])*'/
+    INT_LITERAL:    /[+-]?\d+/
+    STRING_LITERAL: /'(\\(?:[n'\\])|[^'\\])*'/
 
-    // Vestavěné třídy
-    BUILT_IN_CLASS: "Object"
-                  | "Nil"
-                  | "Integer"
-                  | "String"
-                  | "Block"
-                  | "True"
-                  | "False"
-
-    // Vestavěné metody
-    BUILT_IN_METHOD: "new"
-                   | "from:"
-                   | "identicalTo:"
-                   | "equalTo:"
-                   | "asString"
-                   | "asInteger"
-                   | "isNumber"
-                   | "isString"
-                   | "isBlock"
-                   | "isNil"
-                   | "greaterThan:"
-                   | "plus:"
-                   | "minus:"
-                   | "multiplyBy:"
-                   | "divBy:"
-                   | "timesRepeat:"
-                   | ("value:")+
-                   | "read"
-                   | "print"
-                   | "concatenateWith:"
-                   | "startsWith:endsBefore:"
-                   | "whileTrue:"
-                   | "not"
-                   | "and:"
-                   | "or:"
-                   | "ifTrue:ifFalse:"
+    // Identifikátory
+    ID:          /[a-z_][A-Za-z0-9_]*/
+    ID_SELECTOR: /[a-z_][A-Za-z0-9_]*:/
+    SELECTOR_ID: /:[a-zA-Z_][A-Za-z0-9_]*/
+    CID:         /[A-Z][A-Za-z0-9]*/
 
     ////////////////////////////////////////////////////////////////////////////
     //                                                                        //
@@ -130,8 +102,8 @@ SOL25_GRAMMAR = r"""
     //                                                                        //
     ////////////////////////////////////////////////////////////////////////////
 
-    // Startovacím pravidlem je "PROGRAM"
-    ?START: PROGRAM
+    // Startovacím pravidlem je "program"
+    ?start: program
 
 
     // =============================
@@ -139,13 +111,13 @@ SOL25_GRAMMAR = r"""
     // =============================
 
     // Program -> Class Program | ε
-    PROGRAM: (CLASS)*
+    program: (class_definition)*
 
     // Class -> class <Cid> : <Cid> { Method }
-    CLASS: tClass CID tColon CID tLeftCurlyBr METHOD tRightCurlyBr
+    class_definition: _CLASS CID _COLON CID _LEFT_CURLY_BRACKET method_definition _RIGHT_CURLY_BRACKET
 
     // Method -> Selector Block Method | ε
-    METHOD: (SELECTOR BLOCK)*
+    method_definition: (selector block)*
 
 
     // ==============================
@@ -153,11 +125,11 @@ SOL25_GRAMMAR = r"""
     // ==============================
 
     // Selector -> <id> | <id:> SelectorTail
-    SELECTOR: tId
-            | tIdSelector SELECTOR_TAIL
+    selector: ID
+            | ID_SELECTOR selector_tail
 
     // SelectorTail -> <id:> SelectorTail | ε
-    SELECTOR_TAIL: (tIdSelector)*
+    selector_tail: (ID_SELECTOR)*
 
 
     // =======
@@ -165,13 +137,13 @@ SOL25_GRAMMAR = r"""
     // =======
 
     // Block -> [ BlockPar | BlockStat ]
-    BLOCK:      tLeftSquareBr BLOCK_PAR tPipe BLOCK_STAT tRightSquareBr
+    block: _LEFT_SQUARE_BRACKET block_parameter _PIPE block_statement _RIGHT_SQUARE_BRACKET
 
     // BlockPar -> <:id> BlockPar | ε
-    BLOCK_PAR:  (tSelectorId)*
+    block_parameter: (SELECTOR_ID)*
 
-    // Selector -> <id> := Expr . BlockStat | ε
-    BLOCK_STAT: (tId tAssignOp EXPR tDot)*
+    // BlockStat -> <id> := Expr . BlockStat | ε
+    block_statement: (ID _WALRUS expression _DOT)*
 
 
     // =========================
@@ -179,27 +151,27 @@ SOL25_GRAMMAR = r"""
     // =========================
 
     // Expr -> ExprBase ExprTail
-    EXPR: EXPR_BASE EXPR_TAIL
+    expression: expression_base expression_tail
 
     // ExprTail -> <id> | ExprSel
-    EXPR_TAIL: tId
-             | EXPR_SEL
+    expression_tail: ID
+                   | expression_selector
 
     // ExprSel -> <id:> ExprBase ExprSel | ε
-    EXPR_SEL: (tIdSelector EXPR_BASE)*
+    expression_selector: (ID_SELECTOR expression_base)*
 
     // ExprBase -> <int> | <str> | <id> | <Cid> | Block | ( Expr )
-    EXPR_BASE: tIntLiteral
-             | tStringLiteral
-             | tNil
-             | tTrue
-             | tFalse
-             | tSelf
-             | tSuper
-             | CID
-             | BLOCK
-             | tLeftRoundBr EXPR tRightRoundBr
-             | tId
+    expression_base: INT_LITERAL
+                   | STRING_LITERAL
+                   | NIL
+                   | TRUE
+                   | FALSE
+                   | SELF
+                   | SUPER
+                   | CID
+                   | block
+                   | _LEFT_ROUND_BRACKET expression _RIGHT_ROUND_BRACKET
+                   | ID
 
 
     ////////////////////////////////////////////////////////////////////////////
@@ -213,7 +185,8 @@ SOL25_GRAMMAR = r"""
     %ignore COMMENT
 
     // Bílé znaky
-    %ignore /[ \n\t\r]+/
+    %import common.WS
+    %ignore WS
 """
 
 
@@ -222,80 +195,248 @@ SOL25_GRAMMAR = r"""
 #####################################################################
 
 class LarkTransformer(Transformer):
-    def create_AST_program_node(self, children):
+    def program(self, args):
         """
         Program -> Class Program | ε
         """
-        return AST.ProgramNode(children)
+        return AST.ProgramNode(args)
 
-    def class_def(self, children):
+    def class_definition(self, args):
         """
         Class -> class <Cid> : <Cid> { Method }
         """
-        identifier = children[0]
-        fatherIdentifier = children[1]
-        methods = children[2]
-        return AST.ClassNode(identifier, fatherIdentifier, methods)
+        classIdentifier = str(args[0])
+        classFather = str(args[1])
+        classMethodList = args[2] if len(args) > 2 else []
 
-    def method_def(self, children):
+        # Pokud metoda v pravidle vrací seznam, zajistíme, že máme list
+        #if not isinstance(classMethodList, list):
+        #    classMethodList = [classMethodList]
+
+        return AST.ClassNode(classIdentifier, classFather, classMethodList)
+
+    def method_definition(self, args):
         """
         Method -> Selector Block Method | ε
         """
-        selector = children[0]
-        blocks = children[1]
-        return AST.MethodNode(selector, [blocks])
+        # args je seznam s následnými tokeny: [selector, block, selector, block, ...]
+        methodList = []
 
-    def block_def(self, children):
+        for i in range(0, len(args), 2):
+            methodSelector = args[i]
+            methodBlock = args[i+1]
+            methodList.append(AST.MethodNode(methodSelector, methodBlock))
+        return methodList
+
+    def selector(self, args):
+        """
+        Selector -> <id> | <id:> SelectorTail
+        """
+        # Bezparametrický selektor - args[0] se vrací jako string <id>
+        if len(args) == 1:
+            return str(args[0])
+
+        # Parametrický selektor - args[0] (řetězec) <id:>, args[1] SelectorTail (seznam)
+        else:
+            selectorHead = str(args[0])
+            selectorTail = "".join(args[1])  # selector_tail vrací seznam selectorů
+            return selectorHead + selectorTail
+
+    def selector_tail(self, args):
+        """
+        SelectorTail -> <id:> SelectorTail | ε
+        """
+        return [str(selector) for selector in args]
+
+    def block(self, args):
         """
         Block -> [ BlockPar | BlockStat ]
         """
-        parameters = children[0]
-        statements = children[1]
-        return AST.BlockNode(parameters, statements)
+        blockParameterList = args[0] if len(args) > 0 else []
+        blockStatementList = args[1] if len(args) > 1 else []
+        return AST.BlockNode(blockParameterList, blockStatementList)
 
-    def assign_stat(self, children):
+    def block_parameter(self, args):
         """
-        Selector -> <id> := Expr . BlockStat | ε
+        BlockPar -> <:id> BlockPar | ε
         """
-        variable = children[0]
-        expression = children[1]
-        return AST.AssignNode(variable, expression)
+        return [str(selector) for selector in args]
 
-    def var_use(self, token_list):
-        # Např. [ "x" ] => VarNode("x")
-        return AST.VarNode(str(token_list[0]))
+    def block_statement(self, args):
+        """
+        BlockStat -> <id> := Expr . BlockStat | ε
+        """
+        blockStatementList = []
+        for i in range(0, len(args) - 1, 2):
+            assignToVariable = args[i]
+            expression = args[i + 1]
+            variableNode = AST.VarNode(str(assignToVariable))
+            assignNode = AST.AssignNode(variableNode, expression)
+            blockStatementList.append(assignNode)
+        return blockStatementList
 
-    def literal_int(self, token_list):
-        # Např. [ Token(INT,'42') ] => LiteralNode("Integer", 42)
-        val = int(token_list[0])
-        return AST.LiteralNode("Integer", val)
+    def expression(self, args):
+        """
+        Expr -> ExprBase ExprTail
+        """
+        expressionBase = args[0]
+        if len(args) == 1:
+            return expressionBase
+        else:
+            expressionTail = args[1]
 
-    def literal_string(self, token_list):
-        # Např. "'ahoj'" => LiteralNode("String", "ahoj")
-        raw = str(token_list[0])
-        content = raw.strip("'")
-        return AST.LiteralNode("String", content)
+            # Buď je expressionTail jednoduché volání metody bez argumentů
+            if isinstance(expressionTail, str):
+                return AST.ExprNode(expressionBase, expressionTail, [])
 
-    def send_expr(self, children):
-        # [ receiverNode, selectorString, arg1Node, arg2Node, ... ]
-        receiver = children[0]
-        selector = children[1]
-        args = children[2:]
-        return AST.SendNode(receiver, selector, args)
+            # Nebo je expressionTail seznam ve tvaru [ID_SELECTOR, expression_base, ...]
+            elif isinstance(expressionTail, list):
+                currBase = expressionBase
+                for i in range(0, len(expressionTail), 2):
+                    sel = expressionTail[i]
+                    arg = expressionTail[i+1]
+                    currBase = AST.ExprNode(currBase, sel, [arg])
+                return currBase
 
+            # Pro neučekávané hodnoty (ani str, ani list)
+            else:
+                return expressionBase
+
+    def expression_tail(self, args):
+        """
+        ExprTail -> <id> | ExprSel
+        """
+        return args[0]
+
+    def expression_selector(self, args):
+        """
+        ExprSel -> <id:> ExprBase ExprSel | ε
+        """
+        # Vrací list, kde každá dvojice je [selector, expression_base]
+        expressionSelector = []
+
+        for i in range(0, len(args), 2):
+            expressionSelector.append(str(args[i]))
+            expressionSelector.append(args[i+1])
+
+        return expressionSelector
+
+    def expression_base(self, args):
+        """
+        ExprBase -> <int> | <str> | <id> | <Cid> | Block | ( Expr )
+        """
+        if isinstance(args[0], str):
+            return AST.VarNode(args[0])
+        return args[0]
+
+    # --- Tokenové transformace ---
+    def INT_LITERAL(self, token):
+        """
+        Vytvoří uzel AST pro literál typu Integer
+        """
+        return AST.LiteralNode("Integer", int(token))
+
+    def STRING_LITERAL(self, token):
+        """
+        Vytvoří uzel AST pro literál typu String
+        """
+        identifier = str(token)
+        return AST.LiteralNode("String", identifier.strip("'"))
+
+    def NIL(self, token):
+        """
+        Vytvoří uzel AST pro literál typu Nil
+        """
+        return AST.LiteralNode("Nil", None)
+
+    def TRUE(self, token):
+        """
+        Vytvoří uzel AST pro literál typu bool s hodnotou 'true'
+        """
+        return AST.LiteralNode("Bool", True)
+
+    def FALSE(self, token):
+        """
+        Vytvoří uzel AST pro literál typu bool s hodnotou 'false'
+        """
+        return AST.LiteralNode("Bool", False)
+
+    def SELF(self, token):
+        """
+
+        """
+        return AST.VarNode("self")
+
+    def SUPER(self, token):
+        """
+
+        """
+        return AST.VarNode("super")
+
+    def ID(self, token):
+        """
+        Vrátí identifikátor <id> a zkontroluje, že odpovídá regexu: [a-z_][A-Za-z0-9_]*
+        """
+        identifier = str(token)
+        pattern = r'^[a-z_][A-Za-z0-9_]*$'
+        if not re.fullmatch(pattern, identifier):
+            raise LexicalError(f"Neplatný identifikátor <id> '{identifier}'")
+        return identifier
+
+    def ID_SELECTOR(self, token):
+        """
+        Vrátí identifikátor z původního tokenu <id:> a zkontroluje, že odpovídá
+        regexu: [a-z_][A-Za-z0-9_]*:
+        """
+        identifier = str(token)
+        pattern = r'^[a-z_][A-Za-z0-9_]*:$'
+        if not re.fullmatch(pattern, identifier):
+            raise LexicalError(f"Neplatný identifikátor <id:> '{identifier}'")
+        return identifier
+
+    def SELECTOR_ID(self, token):
+        """
+        Vrátí identifikátor z původního tokenu <:id> a zkontroluje, že odpovídá
+        regexu: :[a-z_][A-Za-z0-9_]*
+        """
+        identifier = str(token)
+        pattern = r'^:[a-z_][A-Za-z0-9_]*$'
+        if not re.fullmatch(pattern, identifier):
+            raise LexicalError(f"Neplatný identifikátor <:id> '{identifier}'")
+        return identifier[1:]
+
+    def CID(self, token):
+        """
+        Vrátí identifikátor třidy <Cid> a zkontroluje, že odpovídá
+        regexu: [A-Z][A-Za-z0-9]*
+        """
+        identifier = str(token)
+        pattern = r'^[A-Z][A-Za-z0-9]*$'
+        if not re.fullmatch(pattern, identifier):
+            raise LexicalError(f"Neplatný identifikátor třídy <Cid> '{identifier}'")
+        return identifier
 
 class LarkParser:
     def __init__(self):
-        self._larkParser = Lark(SOL25_GRAMMAR, parser="lalr", start="start")
+        self._larkParser = Lark(SOL25_GRAMMAR, parser="lalr", start="start", debug=True)
         self._ASTBuilder = LarkTransformer()
 
-    def parse(self, SOL25Code):
+    def parse_code(self, SOL25Code):
         try:
             larkParseTree = self._larkParser.parse(SOL25Code)
+        except UnexpectedCharacters as e:
+            raise LexicalError() from e
+        except UnexpectedToken as e:
+            raise SyntaxError() from e
+        except Exception:
+            raise
+
+        try:
             ASTRoot = self._ASTBuilder.transform(larkParseTree)
             return ASTRoot
-
-        except Exception as e:
-            raise e
+        except visitors.VisitError as e:
+            raise LexicalError(str(e.orig_exc.errorDetail)) from e
+        except Exception:
+            raise
 
 ### konec souboru 'LarkParser.py' ###

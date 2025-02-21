@@ -20,6 +20,7 @@
 @details
 """
 
+from typing import Any, List
 from MyPyModules.CustomErrors import InternalError
 
 class ASTNodes:
@@ -28,14 +29,14 @@ class ASTNodes:
             raise InternalError()
 
     class ProgramNode(ASTAbstractNode):
-        def __init__(self, classes:list):
+        def __init__(self, classes:List["ASTNodes.ClassNode"]):
             self.classNodeList = classes
 
         def visit_by(self, visitor):
             return visitor.visit_program_node(self)
 
     class ClassNode(ASTAbstractNode):
-        def __init__(self, identifier:str, fatherIdentifier:str, methods:list):
+        def __init__(self, identifier:str, fatherIdentifier:str, methods:List["ASTNodes.MethodNode"]):
             self.id = identifier
             self.father = fatherIdentifier
             self.methodNodeList = methods
@@ -44,15 +45,15 @@ class ASTNodes:
             return visitor.visit_class_node(self)
 
     class MethodNode(ASTAbstractNode):
-        def __init__(self, selector:str, blocks:list):
+        def __init__(self, selector:str, block:"ASTNodes.BlockNode"):
             self.selector = selector
-            self.blockNodeList = blocks
+            self.blockNode = block
 
         def visit_by(self, visitor):
             return visitor.visit_method_node(self)
 
     class BlockNode(ASTAbstractNode):
-        def __init__(self, parameters:list, statements:list):
+        def __init__(self, parameters:List[str], statements:List["ASTNodes.ASTAbstractNode"]):
             self.paramNodeList = parameters
             self.statementNodeList = statements
 
@@ -60,14 +61,14 @@ class ASTNodes:
             return visitor.visit_block_node(self)
 
     class VarNode(ASTAbstractNode):
-        def __init__(self, identifier):
-            self.varId = identifier
+        def __init__(self, identifier:str):
+            self.id = identifier
 
         def visit_by(self, visitor):
             return visitor.visit_var_node(self)
 
     class LiteralNode(ASTAbstractNode):
-        def __init__(self, type, value):
+        def __init__(self, type:str, value:Any):
             self.literalType = type
             self.literalValue = value
 
@@ -75,45 +76,45 @@ class ASTNodes:
             return visitor.visit_literal_node(self)
 
     class AssignNode(ASTAbstractNode):
-        def __init__(self, variable, expression):
+        def __init__(self, variable:"ASTNodes.VarNode", expression:"ASTNodes.ExprNode"):
             self.varNode = variable
             self.exprNode = expression
 
         def visit_by(self, visitor):
             return visitor.visit_assign_node(self)
 
-    class SendNode(ASTAbstractNode):
-        def __init__(self, receiver, selector, args):
+    class ExprNode(ASTAbstractNode):
+        def __init__(self, receiver:"ASTNodes", selector:str, args:List["ASTNodes"]):
             self.receiver = receiver
             self.selector = selector
             self.argNodeList = args
 
         def visit_by(self, visitor):
-            return visitor.visit_send_node(self)
+            return visitor.visit_expr_node(self)
 
 class ASTNodeVisitor:
-    def visit_program_node(self, ASTnode):
-        raise InternalError()
+    def visit_program_node(self, ASTNode):
+        raise InternalError() from NotImplementedError()
 
-    def visit_block_node(self, ASTnode):
-        raise InternalError()
+    def visit_block_node(self, ASTNode):
+        raise InternalError() from NotImplementedError()
 
-    def visit_class_node(self, ASTnode):
-        raise InternalError()
+    def visit_class_node(self, ASTNode):
+        raise InternalError() from NotImplementedError()
 
-    def visit_method_node(self, ASTnode):
-        raise InternalError()
+    def visit_method_node(self, ASTNode):
+        raise InternalError() from NotImplementedError()
 
-    def visit_send_node(self, ASTnode):
-        raise InternalError()
+    def visit_expr_node(self, ASTNode):
+        raise InternalError() from NotImplementedError()
 
-    def visit_assign_node(self, ASTnode):
-        raise InternalError()
+    def visit_assign_node(self, ASTNode):
+        raise InternalError() from NotImplementedError()
 
-    def visit_var_node(self, ASTnode):
-        raise InternalError()
+    def visit_var_node(self, ASTNode):
+        raise InternalError() from NotImplementedError()
 
-    def visit_literal_node(self, ASTnode):
-        raise InternalError()
+    def visit_literal_node(self, ASTNode):
+        raise InternalError() from NotImplementedError()
 
 ### konec souboru 'ASTNodes.py' ###

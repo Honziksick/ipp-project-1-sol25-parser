@@ -20,7 +20,12 @@
 @details
 """
 
+from sys import exit, stderr
 from enum import Enum
+
+RED_COLOR   = "\033[91m"
+GOLD_COLOR  = "\033[0;93m"
+RESET_COLOR = "\033[0m"
 
 class ExitCode(Enum):
     SUCCESS = 0
@@ -38,16 +43,19 @@ class ExitCode(Enum):
 class CustomError(Exception):
     errorCode = None
     errorMessage = None
+    errorDetail = None
 
-    def __init__(self):
-        super().__init__(f"Error {self.errorCode}: {self.errorMessage}")
+    def __init__(self, detail:str = None):
+        message = f"{RED_COLOR}Error {self.errorCode}: {self.errorMessage}{RESET_COLOR}"
+        if detail:
+            self.errorDetail = detail
+            message += f"\n{GOLD_COLOR}Detail: {detail}{RESET_COLOR}"
+        super().__init__(message)
 
-    def handle(self, exitProgram: bool = True):
-        import sys  # exit
-
-        print(f"Error {self.errorCode}: {self.errorMessage}", file=sys.stderr)
+    def handle(self, exitProgram:bool = True):
+        print(self, file=stderr)
         if exitProgram:
-            sys.exit(self.errorCode)
+            exit(self.errorCode)
 
 # Definice specifických výjimek
 class ArgumentError(CustomError):
@@ -74,15 +82,15 @@ class SemanticMainRunError(CustomError):
     errorCode = ExitCode.SEMANTIC_MAIN_RUN_ERROR.value
     errorMessage = "Sémantická chyba - chybějící třída 'Main' či její instanční metoda 'run'\n"
 
-class UndefinedSymbolError(CustomError):
+class SemanticUndefinedSymbolError(CustomError):
     errorCode = ExitCode.UNDEFINED_SYMBOL_ERROR.value
     errorMessage = "Sémantická chyba - použití nedefinované (a tedy i neinicializované) proměnné, formálního parametru, třídy, nebo třídní metody."
 
-class ArityError(CustomError):
+class SemanticArityError(CustomError):
     errorCode = ExitCode.ARITY_ERROR.value
     errorMessage = "Sémantická chyba - chybná arita (špatná arita bloku přiřazeného k selektoru při definici instanční metody)."
 
-class VariableCollisionError(CustomError):
+class SemanticVariableCollisionError(CustomError):
     errorCode = ExitCode.VARIABLE_COLLISION_ERROR.value
     errorMessage = "Sémantická chyba - kolizní proměnná (lokální proměnná koliduje s formálním parametrem bloku)."
 

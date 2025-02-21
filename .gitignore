@@ -75,9 +75,7 @@ cython_debug/
 **/test/tests_by_fifixsandy/out
 
 # Build system
-**/build/*
-**/build_test/*
-**/build_coverage/*
+sol25_parser/**/xml/*
 
 # General folders and files
 **/ipp-core/.git
@@ -88,6 +86,5 @@ cython_debug/
 *.doc
 *.docx
 **/pack/*
-**/odevzdani/*
-**/parsing_table/*
 !info/*.docx
+!info/*.doc

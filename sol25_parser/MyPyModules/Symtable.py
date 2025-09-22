@@ -1,441 +1,670 @@
 """
 ********************************************************************************
-*                                                                              *
-* Název projektu:   Projekt do předmětu IPP 2024/2025 IFJ24:                   *
+* Název projektu:   Projekt do předmětu IPP 2024/2025:                         *
 *                   Úloha 1 - Analyzátor kódu v SOL25 (parse.py)               *
 *                                                                              *
 * Soubor:           Symtable.py                                                *
 * Autor:            Jan Kalina <xkalinj00>                                     *
 *                                                                              *
 * Datum:            18.02.2025                                                 *
-* Poslední změna:   xx.xx.2025                                                 *
+* Poslední změna:   23.02.2025                                                 *
 *                                                                              *
+* Popis:            Modul pro správu tabulky symbolů. Obsahuje třídy a         *
+*                   metody pro definici tříd, metod a spravování lokálních     *
+*                   rámců pro proměnné a parametry. Součástí jsou funkce       *
+*                   pro zavedení vestavěných symbolů a pro kontrolu kolizí     *
+*                   při definici uživatelských tříd a metod.                   *
 ********************************************************************************
 """
 
-"""
-@file Symtable.py
-@author Jan Kalina \<xkalinj00>
+# Import modulů standardní knihovny
+from typing import Set
 
-@brief
-@details
-"""
+# Import vlastních modulů
+from MyPyModules.AbstractSyntaxTree import ASTNodes as AST
+from MyPyModules.CustomErrors import (InternalError, SemanticOtherError,
+                                      SemanticUndefinedSymbolError,
+                                      SemanticVariableCollisionError
+                                     )
 
-from MyPyModules.ASTNodes import ASTNodes as AST
-from MyPyModules.CustomErrors import (
-    SemanticUndefinedSymbolError,
-    SemanticArityError,
-    SemanticVariableCollisionError,
-    InternalError,
-)
-
-IS_FORMAL_PARAMETER = True
-IS_VARIABLE = False
-TOP_MOST_SCOPE = -1
+# Konstanty využívané jako argumenty metod
+TOP_MOST_SCOPE = -1         # index nejvyšší rámce uvnitř zásobníku rámců
+IS_FORMAL_PARAMETER = True  # vlajka rozlišující formální parametr od proměnné
+IS_VARIABLE = False         # vlajka rozlišující porměnnou od formálního parametru
 
 
-class ClassSymbol:
-    def __init__(self, identifier: str, parent: str, isBuiltIn: bool = False):
-        self.identifier = identifier
-        self.parentName = parent
-        self.methods = {}  # {str, MethodSymbol}
-        self.isBuiltIn = isBuiltIn
+class Symbols:
+    """
+    Třída zastřešující typy symbolů ukládaných do tabulky symbolů.
+    """
 
-    def add_method(self, selector: str, methodSymbol: "MethodSymbol"):
-        if selector in self.methods:
-            raise SemanticUndefinedSymbolError(
-                f"Metoda '{selector}' je již definována ve třídě '{self.identifier}'."
-            )
+    class ClassSymbol:
+        """
+        Třída reprezentující definici třídy ve symbolické tabulce.
 
-        # Pokud je to vestavěná třída, user by neměl umět definovat vestavěné metody:
-        if self.isBuiltIn and not methodSymbol.isBuiltIn:
-            raise SemanticUndefinedSymbolError(
-                f"Nelze definovat novou metodu '{selector}' ve vestavěné třídě '{self.identifier}'."
-            )
-        self.methods[selector] = methodSymbol
+        Atributy:
+            - identifier (str): Identifikátor dané třídy.
+            - parentIdentifier (str): Identifikátor rodičovské třídy.
+            - methods (dict): Slovník metod, kde klíče jsou selektory metod a
+                              hodnoty jsou instance třídy `MethodSymbol`.
+            - isBuiltIn (bool): Příznak, zda je třída vestavěná.
+
+        Metody:
+            - __init__(self, identifier, parentIdentifier, isBuiltIn): Inicializuje symbol třídy.
+            - add_method(self, selector, methodSymbol): Přidá novou metodu do třídy.
+        """
+
+        def __init__(self, identifier:str, parent:str = None, isBuiltIn:bool = False, isDefined:bool = False):
+            """
+            Inicializuje instanci třídy ClassSymbol.
+            """
+            self.identifier = identifier
+            self.parentIdentifier = parent
+            self.methods = {}  # slovník str(methodSelector) --> MethodSymbol
+            self.isBuiltIn = isBuiltIn
+            self.isDefined = isDefined
+
+        def add_method(self, selector:str, methodSymbol:"Symbols.MethodSymbol"):
+            """
+            Asociuje novou metodu do zvolené třídy.
+
+            Parametry:
+                - selector (str): Selektor (název) metody.
+                - methodSymbol (MethodSymbol): Instance metody, kterou chceme přidat.
+
+            Výjimky:
+                - SemanticUndefinedSymbolError
+                    - Pokud je metoda již definována nebo je porušeno pravidlo
+                      definice ve vestavěné třídě.
+            """
+            # Kontrola redefinice metody
+            if selector in self.methods:
+                raise SemanticUndefinedSymbolError(
+                    f"Method '{selector}' is already defined in class "
+                    f"'{self.identifier}'."
+                    )
+            # Kontrola pro vestavěnou třídu, nelze v nich definovat uživatelské metody
+            if self.isBuiltIn and not methodSymbol.isBuiltIn:
+                raise SemanticUndefinedSymbolError(
+                    f"Can not define new method '{selector}' inside built-in "
+                    f"class '{self.identifier}'."
+                    )
+            # Přidání nového symbolu metody do slovníku
+            self.methods[selector] = methodSymbol
+
+    class MethodSymbol:
+        """
+        Třída `MethodSymbol` reprezentuje definici metody v jazyce SOL25.
+
+        Atributy:
+            - selector (str): Selektor metody.
+            - block (AST.BlockNode|None): Tělo metody. Pokud je `None`, metoda
+                                          je vestavěná.
+            - paramCount (int|None): Očekávaný počet parametrů, nebo `None`
+                                     pokud není předem definován.
+            - isBuiltIn (bool): Příznak, zda jde o vestavěnou metodu (True)
+                                nebo uživatelsky definovanou (False).
+
+        Metody:
+            - get_param_count(): Vrací skutečný počet parametrů (z bloku nebo
+                                  z `paramCount`).
+        """
+        def __init__(self, selector:str, block:AST.BlockNode = None,
+                     paramCnt:int = None, isBuiltIn:bool = False, isDefined:bool = False
+                     ):
+            self.selector = selector
+            self.block = block
+            self.paramCount = paramCnt
+            self.isBuiltIn = isBuiltIn
+            self.isDefined =  isDefined
+
+        def get_param_count(self) -> int:
+            """
+            Získá počet parametrů metody. Pokud není `parameterCount` nastaven
+            a `block` je `None`, vrací se 0.
+
+            Návratová hodnota:
+                - int: Počet parametrů buď z `block.parameterNodeList`, pokud
+                       je k dispozici, nebo `paramCount`.
+            """
+            # Získá skutečný počet parametrů z bloku nebo z uloženého `paramCount`.
+            if self.block is not None:
+                return len(self.block.parameterNodeList)
+            elif self.paramCount >= 0:
+                return self.paramCount
+            return 0
 
 
-class MethodSymbol:
-    def __init__(
-        self, selector: str, block: AST.BlockNode, paramCount=None, isBuiltIn=False
-    ):
-        self.selector = selector
-        self.block = block
-        self.paramCount = paramCount
-        self.isBuiltIn = isBuiltIn
+class BuiltInSymbols:
+    """
+    Třída `BuiltInSymbols` obsahuje vestavěné třídy a jejich metody pro jazyk SOL25.
+    """
 
-    def get_param_count(self):
-        if self.block is not None:
-            return len(self.block.paramNodeList)
-        elif self.paramCount >= 0:
-            return self.paramCount
-        return 0
+    class ObjectClass(Symbols.ClassSymbol):
+        """
+        Třída `ObjectClass` reprezentuje vestavěnou třídu `Object`.
+
+        Metody:
+            - __init__(self): Inicializuje vestavěnou třídu `Object` a přidává její metody.
+        """
+
+        def __init__(self):
+            super().__init__("Object", parent = None, isBuiltIn = True, isDefined = True)
+            self.add_method("new", Symbols.MethodSymbol("new", None, 0, True, True))
+            self.add_method("from:", Symbols.MethodSymbol("from:", None, 1, True))
+            self.add_method("asString", Symbols.MethodSymbol("asString", None, 0, True, True))
+            self.add_method("isNumber", Symbols.MethodSymbol("isNumber", None, 0, True, True))
+            self.add_method("isString", Symbols.MethodSymbol("isString", None, 0, True, True))
+            self.add_method("isBlock", Symbols.MethodSymbol("isBlock", None, 0, True, True))
+            self.add_method("equalTo:", Symbols.MethodSymbol("equalTo:", None, 1, True, True))
+            self.add_method("identicalTo:", Symbols.MethodSymbol("identicalTo:", None, 1, True, True))
+
+    class NilClass(Symbols.ClassSymbol):
+        """
+        Třída `NilClass` reprezentuje vestavěnou třídu `Nil`.
+
+        Metody:
+            - __init__(self): Inicializuje vestavěnou třídu `Nil` a přidává její metody.
+        """
+
+        def __init__(self):
+            super().__init__("Nil", parent = "Object", isBuiltIn = True, isDefined = True)
+            self.add_method("asString", Symbols.MethodSymbol("asString", None, 0, True, True))
+
+    class TrueClass(Symbols.ClassSymbol):
+        """
+        Třída `TrueClass` reprezentuje vestavěnou třídu `True`.
+
+        Metody:
+            - __init__(self): Inicializuje vestavěnou třídu `True` a přidává její metody.
+        """
+
+        def __init__(self):
+            super().__init__("True", parent = "Object", isBuiltIn = True, isDefined = True)
+            self.add_method("not", Symbols.MethodSymbol("not", None, 0, True, True))
+            self.add_method("and:", Symbols.MethodSymbol("and:", None, 1, True, True))
+            self.add_method("or:", Symbols.MethodSymbol("or:", None, 1, True, True))
+            self.add_method("ifTrue:ifFalse:", Symbols.MethodSymbol("ifTrue:ifFalse:", None, 2, True, True))
+
+    class FalseClass(Symbols.ClassSymbol):
+        """
+        Třída `FalseClass` reprezentuje vestavěnou třídu `False`.
+
+        Metody:
+            - __init__(self): Inicializuje vestavěnou třídu `False` a přidává její metody.
+        """
+
+        def __init__(self):
+            super().__init__("False", parent = "Object", isBuiltIn = True, isDefined = True)
+            self.add_method("not", Symbols.MethodSymbol("not", None, 0, True, True))
+            self.add_method("and:", Symbols.MethodSymbol("and:", None, 1, True, True))
+            self.add_method("or:", Symbols.MethodSymbol("or:", None, 1, True, True))
+            self.add_method("ifTrue:ifFalse:", Symbols.MethodSymbol("ifTrue:ifFalse:", None, 2, True, True))
+
+    class IntegerClass(Symbols.ClassSymbol):
+        """
+        Třída `IntegerClass` reprezentuje vestavěnou třídu `Integer`.
+
+        Metody:
+            - __init__(self): Inicializuje vestavěnou třídu `Integer` a přidává její metody.
+        """
+
+        def __init__(self):
+            super().__init__("Integer", parent = "Object", isBuiltIn = True, isDefined = True)
+            self.add_method("plus:", Symbols.MethodSymbol("plus:", None, 1, True, True))
+            self.add_method("minus:", Symbols.MethodSymbol("minus:", None, 1, True, True))
+            self.add_method("divBy:", Symbols.MethodSymbol("divBy:", None, 1, True, True))
+            self.add_method("equalTo:", Symbols.MethodSymbol("equalTo:", None, 1, True, True))
+            self.add_method("asString", Symbols.MethodSymbol("asString", None, 0, True, True))
+            self.add_method("asInteger", Symbols.MethodSymbol("asInteger", None, 0, True, True))
+            self.add_method("timesRepeat:", Symbols.MethodSymbol("timesRepeat:", None, 1, True, True))
+            self.add_method("multiplyBy:", Symbols.MethodSymbol("multiplyBy:", None, 1, True, True))
+            self.add_method("greaterThan:", Symbols.MethodSymbol("greaterThan:", None, 1, True, True))
+
+    class StringClass(Symbols.ClassSymbol):
+        """
+        Třída `StringClass` reprezentuje vestavěnou třídu `String`.
+
+        Metody:
+            - __init__(self): Inicializuje vestavěnou třídu `String` a přidává její metody.
+        """
+
+        def __init__(self):
+            super().__init__("String", parent = "Object", isBuiltIn = True, isDefined = True)
+            self.add_method("read", Symbols.MethodSymbol("read", None, 0, True, True))
+            self.add_method("print", Symbols.MethodSymbol("print", None, 0, True, True))
+            self.add_method("equalTo:", Symbols.MethodSymbol("equalTo:", None, 1, True, True))
+            self.add_method("asString", Symbols.MethodSymbol("asString", None, 0, True, True))
+            self.add_method("asInteger", Symbols.MethodSymbol("asInteger", None, 0, True, True))
+            self.add_method("concatenateWith:", Symbols.MethodSymbol("concatenateWith:", None, 1, True, True))
+            self.add_method("startsWith:endsBefore:", Symbols.MethodSymbol("startsWith:endsBefore:", None, 2, True, True))
+
+    class BlockClass(Symbols.ClassSymbol):
+        """
+        Třída `BlockClass` reprezentuje vestavěnou třídu `Block`.
+
+        Metody:
+            - __init__(self): Inicializuje vestavěnou třídu `Block` a přidává její metody.
+        """
+
+        def __init__(self):
+            super().__init__("Block", parent = "Object", isBuiltIn = True, isDefined = True)
+            self.add_method("value", Symbols.MethodSymbol("value", None, 0, True, True))
+            self.add_method("value:", Symbols.MethodSymbol("value:", None, 1, True, True))
+            self.add_method("whileTrue:", Symbols.MethodSymbol("whileTrue:", None, 1, True, True))
 
 
 class Symtable:
+    """
+    Třída reprezentující tabulku symbolů, která spravuje symboly tříd, metod a
+    lokálních proměnných. Instance třídy `Symtable` drží jednu instanci podtřídy
+    `ClassManager` a jednu instanci podtřídy `ScopeManager`, které lze používat
+    ke správě symbolů.
+
+    Třída `Symtable` sdružuje dvě podtřídy:
+        - `ClassManager` pro správu tříd a metod,
+        - `ScopeManager` pro správu lokálních rámců a proměnných.
+    """
+
     def __init__(self):
-        self.classes = {}  # {str, ClassSymbol}
-        # Scopes pro lokální proměnné a formální parametry – každý scope je reprezentován slovníkem,
-        # kde klíče jsou identifikátory a hodnota bool (True = formální parametr, False = běžná proměnná)
-        self.scopes = (
-            []
-        )  # stack (list) slovníků: ident -> bool (IS_FORMAL_PARAMETER/IS_VARIABLE)
-
-    def load_builtin_symbols(self):
         """
-        Hard-coded zavedení vestavěných tříd a jejich metod.
+        Vytvoří instance podtříd `ClassManager` a `ScopeManager`.
         """
-        # 1) Vytvoříme ClassSymbol pro Object (bez parent)
-        objectClassSymbol = ClassSymbol("Object", parent=None, isBuiltIn=True)
-        # Třídní metody new, from: definujeme spíš až v BĚŽNÝCH potomcích,
-        # ale zadání říká, že new/from: je definováno v Object a dědí se do potomků,
-        # a nejde je redefinovat.
-        objectClassSymbol.add_method(
-            "new", MethodSymbol("new", block=None, paramCount=0, isBuiltIn=True)
-        )
-        objectClassSymbol.add_method(
-            "from:", MethodSymbol("from:", block=None, paramCount=1, isBuiltIn=True)
-        )
-        # Instanční metody (jen příklad): identicalTo:, equalTo:, asString, ...
-        objectClassSymbol.add_method(
-            "identicalTo:",
-            MethodSymbol("identicalTo:", block=None, paramCount=1, isBuiltIn=True),
-        )
-        objectClassSymbol.add_method(
-            "equalTo:",
-            MethodSymbol("equalTo:", block=None, paramCount=1, isBuiltIn=True),
-        )
-        objectClassSymbol.add_method(
-            "asString",
-            MethodSymbol("asString", block=None, paramCount=0, isBuiltIn=True),
-        )
-        objectClassSymbol.add_method(
-            "isNumber",
-            MethodSymbol("isNumber", block=None, paramCount=0, isBuiltIn=True),
-        )
-        objectClassSymbol.add_method(
-            "isString",
-            MethodSymbol("isString", block=None, paramCount=0, isBuiltIn=True),
-        )
-        objectClassSymbol.add_method(
-            "isBlock", MethodSymbol("isBlock", block=None, paramCount=0, isBuiltIn=True)
-        )
-        objectClassSymbol.add_method(
-            "isNil", MethodSymbol("isNil", block=None, paramCount=0, isBuiltIn=True)
-        )
+        self.classManager = self.ClassManager()
+        self.scopeManager = self.ScopeManager()
 
-        self.classes["Object"] = objectClassSymbol
-
-        # 2) Nil : Object (singleton)
-        nilClassSymbol = ClassSymbol("Nil", parent="Object", isBuiltIn=True)
-        # vestavěné metody asString => 'nil'
-        nilClassSymbol.add_method(
-            "asString",
-            MethodSymbol("asString", block=None, paramCount=0, isBuiltIn=True),
-        )
-        self.classes["Nil"] = nilClassSymbol
-
-        # 3) True : Object
-        trueClassSymbol = ClassSymbol("True", parent="Object", isBuiltIn=True)
-        trueClassSymbol.add_method(
-            "not", MethodSymbol("not", block=None, paramCount=0, isBuiltIn=True)
-        )
-        trueClassSymbol.add_method(
-            "and:", MethodSymbol("and:", block=None, paramCount=1, isBuiltIn=True)
-        )
-        trueClassSymbol.add_method(
-            "or:", MethodSymbol("or:", block=None, paramCount=1, isBuiltIn=True)
-        )
-        trueClassSymbol.add_method(
-            "ifTrue:ifFalse:",
-            MethodSymbol("ifTrue:ifFalse:", None, paramCount=2, isBuiltIn=True),
-        )
-        self.classes["True"] = trueClassSymbol
-
-        # 4) False : Object
-        falseClassSymbol = ClassSymbol("False", parent="Object", isBuiltIn=True)
-        falseClassSymbol.add_method(
-            "not", MethodSymbol("not", block=None, paramCount=0, isBuiltIn=True)
-        )
-        falseClassSymbol.add_method(
-            "and:", MethodSymbol("and:", block=None, paramCount=1, isBuiltIn=True)
-        )
-        falseClassSymbol.add_method(
-            "or:", MethodSymbol("or:", block=None, paramCount=1, isBuiltIn=True)
-        )
-        falseClassSymbol.add_method(
-            "ifTrue:ifFalse:",
-            MethodSymbol("ifTrue:ifFalse:", None, paramCount=2, isBuiltIn=True),
-        )
-        self.classes["False"] = falseClassSymbol
-
-        # 5) Integer : Object
-        integerClassSymbol = ClassSymbol("Integer", parent="Object", isBuiltIn=True)
-        integerClassSymbol.add_method(
-            "equalTo:",
-            MethodSymbol("equalTo:", block=None, paramCount=1, isBuiltIn=True),
-        )
-        integerClassSymbol.add_method(
-            "greaterThan:",
-            MethodSymbol("greaterThan:", block=None, paramCount=1, isBuiltIn=True),
-        )
-        integerClassSymbol.add_method(
-            "plus:", MethodSymbol("plus:", block=None, paramCount=1, isBuiltIn=True)
-        )
-        integerClassSymbol.add_method(
-            "minus:", MethodSymbol("minus:", block=None, paramCount=1, isBuiltIn=True)
-        )
-        integerClassSymbol.add_method(
-            "multiplyBy:",
-            MethodSymbol("multiplyBy:", block=None, paramCount=1, isBuiltIn=True),
-        )
-        integerClassSymbol.add_method(
-            "divBy:", MethodSymbol("divBy:", block=None, paramCount=1, isBuiltIn=True)
-        )
-        integerClassSymbol.add_method(
-            "asString",
-            MethodSymbol("asString", block=None, paramCount=0, isBuiltIn=True),
-        )
-        integerClassSymbol.add_method(
-            "asInteger",
-            MethodSymbol("asInteger", block=None, paramCount=0, isBuiltIn=True),
-        )
-        integerClassSymbol.add_method(
-            "timesRepeat:",
-            MethodSymbol("timesRepeat:", block=None, paramCount=1, isBuiltIn=True),
-        )
-        self.classes["Integer"] = integerClassSymbol
-
-        # 6) String : Object
-        stringClassSymbol = ClassSymbol("String", parent="Object", isBuiltIn=True)
-        stringClassSymbol.add_method(
-            "print", MethodSymbol("print", block=None, paramCount=0, isBuiltIn=True)
-        )
-        stringClassSymbol.add_method(
-            "equalTo:",
-            MethodSymbol("equalTo:", block=None, paramCount=1, isBuiltIn=True),
-        )
-        stringClassSymbol.add_method(
-            "asString",
-            MethodSymbol("asString", block=None, paramCount=0, isBuiltIn=True),
-        )
-        stringClassSymbol.add_method(
-            "asInteger",
-            MethodSymbol("asInteger", block=None, paramCount=0, isBuiltIn=True),
-        )
-        stringClassSymbol.add_method(
-            "concatenateWith:",
-            MethodSymbol("concatenateWith:", None, paramCount=1, isBuiltIn=True),
-        )
-        stringClassSymbol.add_method(
-            "startsWith:endsBefore:",
-            MethodSymbol("startsWith:endsBefore:", None, paramCount=2, isBuiltIn=True),
-        )
-        # Třídní metoda read => musíme zapsat do Object ???
-        # Podle zadání je to "String read". Tj. je to vestavěná "class method" => definujeme i sem:
-        stringClassSymbol.add_method(
-            "read", MethodSymbol("read", block=None, paramCount=0, isBuiltIn=True)
-        )
-        self.classes["String"] = stringClassSymbol
-
-        # 7) Block : Object
-        blockClassSymbol = ClassSymbol("Block", parent="Object", isBuiltIn=True)
-        # vestavěné inst. metody for block => "value", "value:", "whileTrue:", ...
-        blockClassSymbol.add_method(
-            "whileTrue:",
-            MethodSymbol("whileTrue:", block=None, paramCount=1, isBuiltIn=True),
-        )
-        # atd. "value", "value:", "value:value:" => v základu by se generovaly dle počtu param.
-        blockClassSymbol.add_method(
-            "value", MethodSymbol("value", block=None, paramCount=0, isBuiltIn=True)
-        )
-        blockClassSymbol.add_method(
-            "value:", MethodSymbol("value:", block=None, paramCount=1, isBuiltIn=True)
-        )
-        self.classes["Block"] = blockClassSymbol
-
-    # ----------------- Vkládání user-def třídy a metody -----------------
-
-    # Práce s třídami a metodami
-    def insert_class_symbol(self, identifier: str, parent: str = None):
+    class ClassManager:
         """
-        Přidá uživatelskou třídu. Kontroluje kolizi s vestavěnou i existující user definicí.
+        Podtřída pro správu symbolů tříd a metod. Uchovává slovník `classes`,
+        do kterého se vkládají definice tříd a metod.
+
+        Atributy:
+            - scopes (list): Zásobník rámců, kde každý rámec je slovník.
+
+        Metody:
+            - __init__(self): Inicializuje prázdný slovník identifikátorů a symbolů tříd.
+            - load_builtin_symbols(self): Načte vestavěné třídy a jejich metody do tabulky symbolů.
+            - insert_class_symbol(self, identifier:str, parentIdentifier:str):
+              Vloží do tabulky novou uživatelskou třídu a zkotroluje kolize.
+            - insert_method_symbol(self, classIdentifier:str, selector:str, block:AST.BlockNode):
+              Přidá (vloží) novou metodu do specifikované třídy.
+            - get_class_symbol(self, identifier:str): Vyhledá a vrátí symbol třídy
+            - get_method_symbol(self, classIdentifier:str, selector:str, visited:Set[str]):
+              Rekurzivně vyhledá metodu v dané třídě a případně v jejích předcích.
         """
-        if identifier in self.classes:
-            # buď už je vestavěná, nebo definovaná
-            existing = self.classes[identifier]
-            if existing.isBuiltIn:
+
+        def __init__(self):
+            """
+            Inicializuje prázdný slovník identifikátorů a symbolů tříd.
+            """
+            self.classes = {}  # slovník str(classIdentifier) --> ClassSymbol
+
+        def load_builtin_symbols(self):
+            """
+            Načte vestavěné třídy a jejich metody do tabulky symbolů. Vytvoří
+            se třídy Object, Nil, True, False, Integer, String a Block. Každá
+            třída má přiřazené své vestavěné metody.
+            """
+            builtins = [
+                BuiltInSymbols.ObjectClass(),  # Třída 'Object'
+                BuiltInSymbols.NilClass(),  # Třida 'Nil'
+                BuiltInSymbols.TrueClass(),  # Třida 'True'
+                BuiltInSymbols.FalseClass(),  # Třída 'False'
+                BuiltInSymbols.IntegerClass(),  # Třída 'Integer'
+                BuiltInSymbols.StringClass(),  # Třída 'String'
+                BuiltInSymbols.BlockClass()  # Třída 'Block'
+                ]
+            for builtinClass in builtins:
+                self.classes[builtinClass.identifier] = builtinClass
+
+        def insert_class_symbol(self, identifier:str, parentIdentifier:str = None,
+                                defined:bool = False
+                                ):
+            """
+            Vloží do tabulky novou uživatelskou třídu a zkotroluje kolize.
+
+            Parametry:
+                - identifier (str): Název nové třídy.
+                - parentIdentifier (str): Název rodičovské třídy, pokud existuje.
+
+            Výjimky:
+                - SemanticUndefinedSymbolError:
+                    - Pokud rodičovská třída není definována.
+                - SemanticOtherError:
+                    - Pokud již existuje vestavěná třída se stejným názvem.
+                    - Pokud již byla definována uživatelská třída se stejným názvem.
+            """
+            # Vloží novou třídu do tabulky symbolů.
+            if identifier in self.classes:
+                existing = self.classes[identifier]
+                # Kontrola opakované definice či kolize s vestavěnou třídou.
+                if existing.isBuiltIn:
+                    raise SemanticOtherError(
+                        f"Can not redefine built-in class '{identifier}'."
+                        )
+                elif not existing.isDefined:
+                    existing.isDefined = True
+                    return
+                else:
+                    raise SemanticOtherError(
+                        f"Class '{identifier}' is defined multiple times."
+                        )
+            self.classes[identifier] = (
+                Symbols.ClassSymbol(identifier, parentIdentifier, isBuiltIn = False, isDefined = defined))
+
+        def insert_method_symbol(self, classIdentifier:str, selector:str,
+                                 block:AST.BlockNode, defined:bool = False
+                                 ):
+            """
+            Přidá (vloží) novou metodu do specifikované třídy.
+
+            Parametry:
+                - classIdentifier (str): Název (jméno) třídy, do které metodu vkládáme.
+                - selector (str): Selektor (název) metody.
+                - block (AST.BlockNode): Blok kódu, který metodu reprezentuje.
+
+            Výjimky:
+                - SemanticUndefinedSymbolError:
+                    - Pokud neexistuje zadaná třída.
+                    - Pokud je metoda již definovaná v této třídě.
+                    - Pokud se pokoušíme definovat metodu ve vestavěné třídě.
+                - SemanticArityError:
+                    - Pokud metoda přetěžuje metodu z rodičovské třídy, ale
+                      s jiným počtem parametrů.
+            """
+            # Získá symbol třídy, ke které má být metoda připojena
+            classSymbol = self.classes.get(classIdentifier)
+
+            # Kontrola možných kolizí a chybné definice
+            if classSymbol is None:
                 raise SemanticUndefinedSymbolError(
-                    f"Nelze znovu definovat vestavěnou třídu '{identifier}'."
-                )
+                    f"Class '{classIdentifier}' doesn't exist."
+                    )
+            if classSymbol.isBuiltIn:
+                raise SemanticUndefinedSymbolError(
+                    f"Can not define method '{selector}' inside built-in class "
+                    f"'{classIdentifier}'."
+                    )
+            if selector in classSymbol.methods:
+                raise SemanticUndefinedSymbolError(
+                    f"Method '{selector}' is already defined inside class "
+                    f"'{classIdentifier}'."
+                    )
+            # Asociace metody s danou třídou
+            classSymbol.add_method(selector, Symbols.MethodSymbol(selector, block, isBuiltIn = False, isDefined = defined))
+
+        def get_class_symbol(self, identifier:str) -> Symbols.ClassSymbol | None:
+            """
+            Vyhledá a vrátí symbol třídy podle identifikátoru, nebo None pokud
+            neexistuje.
+
+            Parametry:
+                - identifier (str): Název třídy.
+
+            Návratová hodnota:
+                - Symbols.ClassSymbol | None: Objekt reprezentující třídu,
+                                              pokud existuje, jinak `None`.
+            """
+            return self.classes.get(identifier)
+
+        def get_all_class_symbols(self) -> list:
+            """
+            Vrátí seznam všech symbolů tříd.
+
+            Návratová hodnota:
+                - list: Seznam všech symbolů tříd.
+            """
+            return list(self.classes.values())
+
+        def get_method_symbol(self, classIdentifier:str, selector:str, visited:Set[str] = None):
+            """
+            Rekurzivně vyhledá metodu v dané třídě a případně v jejích předcích.
+
+            Parametry:
+                - classIdentifier (str): Identifikátor třídy, kde vyhledávání začíná.
+                - selector (str): Selektor (identifikátor) hledané metody.
+                - visited (set): Množina dříve navštívených tříd pro detekci cyklů.
+
+            Návratová hodnota:
+                - Symbols.MethodSymbol | None: Metodu, pokud je nalezena, jinak `None`.
+            """
+            # Pokud nebylo předáno 'visited', vytvoří se nová prázdná množina.
+            if visited is None:
+                visited = set()
+
+            # Pokud jsme již tuto třídu navštívili, hrozí cyklus, proto vracíme `None`.
+            if classIdentifier in visited:
+                return None
+            # Jinak přidáme tuto třídu do `visited`
             else:
-                raise SemanticUndefinedSymbolError(
-                    f"Třída '{identifier}' je definována dvakrát."
-                )
-        self.classes[identifier] = ClassSymbol(identifier, parent, isBuiltIn=False)
+                visited.add(classIdentifier)
 
-    def insert_method_symbol(self, className: str, selector: str, block: AST.BlockNode):
-        classSymbol = self.classes.get(className)
-        if classSymbol is None:
-            raise SemanticUndefinedSymbolError(f"Třída '{className}' neexistuje!")
-        if selector in classSymbol.methods:
-            raise SemanticUndefinedSymbolError(
-                f"Metoda '{selector}' je již definována ve třídě '{className}'."
-            )
+            # Pokud je 'classIdentifier' prázdný, nelze pokračovat.
+            if not classIdentifier:
+                return None
+            # Jinak získání symbol třídy podle jejího identifikátoru.
+            else:
+                classSymbol = self.classes.get(classIdentifier)
 
-        classSymbol = self.classes.get(className)
-        if classSymbol is None:
-            raise SemanticUndefinedSymbolError(f"Třída '{className}' neexistuje!")
+            # Pokud symbol třídy neexistuje, vracíme `None` (třída nebyla nalezena).
+            if not classSymbol:
+                return None
 
-        # Ověřit, jestli to už není definované
-        if selector in classSymbol.methods:
-            raise SemanticUndefinedSymbolError(
-                f"Metoda '{selector}' je již definována ve třídě '{className}'."
-            )
+            # Pokud je hledaný selektor mezi metodami aktuální třídy, vrátíme nalezenou metodu.
+            if selector in classSymbol.methods:
+                return classSymbol.methods[selector]
+            # Pokud má třída rodiče, pokusíme se vyhledat metodu rekurzivně v předkovi.
+            elif classSymbol.parentIdentifier:
+                return self.get_method_symbol(classSymbol.parentIdentifier, selector, visited)
+            # Jinak se nepodařilo nic najít, vracíme `None`.
+            else:
+                return None
 
-        # Zákaz override vestavěné metody, pokud třída je vestavěná:
-        if classSymbol.isBuiltIn:
-            # Nelze definovat user method ve vestavěné třídy
-            raise SemanticUndefinedSymbolError(
-                f"Nelze definovat metodu '{selector}' ve vestavěné třídě '{className}'."
-            )
+        def class_knows_method(self, classIdentifier:str, methodIdentifier:str) -> bool:
+            """
+            Zkontroluje, zda třída zná danou metodu.
 
-        # override v parentu: pokud existuje, zkontroluj stejnou aritu
-        parentMethod = self.get_method_symbol(classSymbol.parentName, selector)
-        if parentMethod is not None:
-            paramCount = len(block.paramNodeList)
-            if parentMethod.get_param_count() != paramCount:
-                raise SemanticArityError(
-                    f"Override metody '{selector}' ve třídě '{className}' má nesprávnou aritu. "
-                    f"Původní metoda má {parentMethod.get_param_count()} parametrů, ale nová {paramCount}."
-                )
-        # Vložíme
-        classSymbol.add_method(selector, MethodSymbol(selector, block, isBuiltIn=False))
+            Parametry:
+                - class_name (str): Název třídy.
+                - method_identifier (str): Identifikátor metody.
 
-    def get_class_symbol(self, identifier: str):
-        return self.classes.get(identifier)
+            Návratová hodnota:
+                - bool: `True`, pokud třída zná metodu, jinak `False`.
+            """
+            classSymbol = self.get_class_symbol(classIdentifier)
+            if classSymbol is None:
+                return False
+            return methodIdentifier in classSymbol.methods
 
+        def set_class_as_defined(self, classNode:AST.ClassNode):
+            """
+            Nastaví atribut `isDefined` na `True` pro třídu s daným identifikátorem.
 
-    def get_method_symbol(self, className: str, selector: str, visited=None):
+            Parametry:
+                - classNode (AST.ClassNode): Uzel třídy.
+
+            Výjimky:
+                - InternalError: Pokud třída není nalezena.
+            """
+            classSymbol = self.get_class_symbol(classNode.identifier)
+            if classSymbol is not None and classSymbol.isDefined:
+                raise SemanticOtherError(
+                    f"Class '{classNode.identifier}' is already defined."
+                    )
+            if classSymbol is not None:
+                classSymbol.parentIdentifier = classNode.perentIdentifier
+                classSymbol.isDefined = True
+            else:
+                self.insert_class_symbol(classNode.identifier, classNode.perentIdentifier, True)
+
+            parentSymbol = self.get_class_symbol(classNode.perentIdentifier)
+            if parentSymbol is None:
+               self.insert_class_symbol(classNode.perentIdentifier, None, False)
+
+        def are_all_classes_defined(self):
+            """
+            Zkontroluje, zda všechny třídy v tabulce symbolů jsou definované.
+
+            Výjimky:
+                - SemanticUndefinedSymbolError: Pokud některá třída není definována.
+            """
+            for classSymbol in self.classes.values():
+                if not classSymbol.isDefined:
+                    raise SemanticUndefinedSymbolError(
+                        f"Class '{classSymbol.identifier}' is not defined."
+                        )
+
+    class ScopeManager:
         """
-        Vyhledává metodu (selector) v dané třídě a pokud nic, rekurzivně v parentu.
+        Podtřída pro správu lokálních rámců (scope) a proměnných.
+        Uchovává seznam slovníků `scopes`, které fungují jako zásobník rámců.
+
+        Atributy:
+            - scopes (list): Zásobník rámců, kde každý rámec je slovník.
+
+        Metody:
+            - __init__(self): Inicializuje zásobník rámců jako prázdný seznam.
+            - enter_new_scope(self): Vytvoří nový rámec pro proměnné a parametry.
+            - exit_current_scope(self): Ukončí aktuální rámec.
+            - top_scope(self): Získá horní rámec ze zásobníku rámců.
+            - define_variable(self, identifier:str): Přidá nový formální parametr
+            - define_pseudovariable(self, identifier:str, value): Přidá pseudoproměnnou.
+            - is_defined(self, identifier:str): Ověří, zda je proměnná definována.
+            - is_formal_parameter(self, identifier:str): Zjistí, zda je proměnná formálním parametrem.
         """
-        if visited is None:
-            visited = set()
 
-        if className in visited:
-            return None
-        visited.add(className)
+        def __init__(self):
+            """
+            Inicializuje zásobník rámců jako prázdný seznam.
+            """
+            self.scopes = []  # seznam (zásobník) slovníků `classes`
 
-        if not className:
-            return None
+        def enter_new_scope(self):
+            """
+            Vytvoří nový (vnořený) rámec (rozsah platnosti) pro proměnné a
+            parametry. Pokud nějaký scope již existuje, překopírují se "pseudo"
+            položky (tj. `self` a `super`), do rozsahu platnosti.
+            """
+            newScope = {}
+            if self.scopes:
+                # Zkopíruje pseudoproměnné.
+                for ident, value in self.top_scope().items():
+                    if isinstance(value, dict) and value.get("pseudo", False):
+                        newScope[ident] = value
+            self.scopes.append(newScope)
 
-        classSymbol = self.classes.get(className)
-        if not classSymbol:
-            return None
+        def exit_current_scope(self):
+            """
+            Ukončí (odstraní) aktuální rámec (rozsah platnosti) z vrcholu
+            zásobníku.
 
-        if selector in classSymbol.methods:
-            return classSymbol.methods[selector]
+            Výjimky:
+                - InternalError: Pokud nelze ukončit žádný rámec.
+            """
+            if not self.scopes:
+                raise InternalError("There is no scope to exit.")
+            self.scopes.pop()
 
-        if classSymbol.parentName:
-            return self.get_method_symbol(classSymbol.parentName, selector, visited)
+        def top_scope(self) -> dict:
+            """
+            Získá horní (aktuální) rámec ze zásobníku rámců.
 
-        return None
+            Návratová hodnota:
+                - dict: Aktuální (horní) rámec ze zásobníku rámců.
+            """
+            return self.scopes[TOP_MOST_SCOPE]
 
-    # ---------------- Lokální scopy pro proměnné a parametry ---------------
+        def define_variable(self, identifier:str):
+            """
+            Definuje (přidá) novou proměnnou do horního rámece, pokud
+            ještě není definovaná.
 
-    def enter_new_scope(self):
-        """Vytvoří nový lokální rozsah se zděděním speciálních proměnných."""
-        new_scope = {}
-        if self.scopes:
-            # Zkopírujeme položky označené jako special (např. self, super) do nového scope
-            for ident, value in self.top_scope().items():
-                if isinstance(value, dict) and value.get("special", False):
-                    new_scope[ident] = value
-        self.scopes.append(new_scope)
+            Parametry:
+                identifier (str): Název nové proměnné.
+            """
+            # Pokud žádný rámec neexistuje, tak se vytvoří.
+            if not self.scopes:
+                self.enter_new_scope()
 
-    def exit_current_scope(self):
-        """Ukončí aktuální lokální rozsah."""
-        if not self.scopes:
-            raise InternalError("Žádný scope k ukončení.")
-        self.scopes.pop()
+            # Definujeme novou proměnnou v horním rámci.
+            topScope = self.top_scope()
+            if identifier not in topScope:
+                topScope[identifier] = IS_VARIABLE
 
-    def top_scope(self):
-        return self.scopes[TOP_MOST_SCOPE]
+        def define_formal_parameter(self, identifier:str):
+            """
+            Definuje (přidá) nový formální parametr v aktuálním (horním) rámci.
 
-    def define_variable(self, identifier: str):
-        """
-        Definuje proměnnou v aktuálním rozsahu, pokud ještě nebyla definována.
-        Běžné přiřazení nepřepisuje již existující proměnnou.
-        """
-        if not self.scopes:
-            self.enter_new_scope()
+            Parametry:
+                identifier (str): Název parametru.
 
-        topScope = self.top_scope()
-        if identifier not in topScope:
-            topScope[identifier] = IS_VARIABLE
+            Výjimky:
+                - SemanticVariableCollisionError:
+                    - Pokud parametr se stejným jménem již existuje v aktuálním rámci.
+            """
+            #  Pokud žádný rámec neexistuje, tak se vytvoří.
+            if not self.scopes:
+                self.enter_new_scope()
 
-    def define_parameter(self, identifier: str):
-        """
-        Definuje formální parametr v aktuálním rozsahu. Pokud již parametr se stejným jménem existuje,
-        vyvolá se chyba kolize.
-        """
-        if not self.scopes:
-            self.enter_new_scope()
+            # Kontrola kolízí mezi indetifikátory v horním rámci.
+            topScope = self.top_scope()
+            if identifier in topScope:
+                raise SemanticVariableCollisionError(
+                    f"Collision of formal parameter '{identifier}'."
+                    )
+            topScope[identifier] = IS_FORMAL_PARAMETER  # označíme ho jako fromální parametr
 
-        topScope = self.top_scope()
-        if identifier in topScope:
-            raise SemanticVariableCollisionError(
-                f"Kolize formálního parametru: {identifier}"
-            )
-        topScope[identifier] = IS_FORMAL_PARAMETER
+        def define_pseudovariable(self, identifier:str, value):
+            """
+            Definuje pseudoproměnnou (např. `self`, `super`) v aktuálním
+            (horním) rámci.
 
-    def define_pseudovariable(self, identifier: str, value):
-        """
-        Definuje rezervovanou pseudoproměnnou (self, super) v aktuálním scope.
-        Tyto bindingy jsou immutable – nelze je později přepsat.
-        """
-        topScope = self.top_scope()
-        if identifier in topScope:
-            raise SemanticVariableCollisionError(f"Pseudoproměnná '{identifier}' je již definována.")
-        # Uložíme hodnotu společně s příznakem jako special
-        topScope[identifier] = {"special": True, "value": value}
+            Parametry:
+                identifier (str): Název pseudoproměnné.
+                value: Hodnota, která se k pseudoproměnné přiřadí.
 
-    def is_defined(self, identifier: str):
-        """
-        Ověří, zda je proměnná definována v aktuálním rozsahu.
-        Podle zadání nejsou proměnné z jednoho bloku viditelné v lexikálně zanořených blocích.
-        """
-        if not self.scopes:
-            return False
-        return identifier in self.top_scope()
+            Výjimky:
+                - SemanticVariableCollisionError:
+                    - Pokud je pseudoproměnná již definována.
+            """
+            # Kontrola kolízí mezi indetifikátory v horním rámci.
+            topScope = self.top_scope()
+            if identifier in topScope:
+                raise SemanticVariableCollisionError(
+                    f"Pseudovariable '{identifier}' is already defined."
+                    )
+            topScope[identifier] = {"pseudo": True, "value": value}  # přidání pseudoproměnných
 
-    def is_defined_in_current_scope(self, identifier: str):
-        """Vrátí, zda je proměnná definována přímo v aktuálním (horním) rozsahu."""
-        if not self.scopes:
-            return False
-        return identifier in self.top_scope()
+        def is_defined(self, identifier:str) -> bool:
+            """
+            Ověří, zda je proměnná definována v aktuálním (horním) rámci.
 
-    def is_formal_parameter(self, identifier: str):
-        """Ověří, zda je proměnná v aktuálním rozsahu formálním parametrem."""
-        if not self.scopes:
-            return False
-        # Pokud parametr neexistuje, default by měl být IS_VARIABLE (tj. False)
-        topScope = self.top_scope()
-        variableType = topScope.get(identifier, IS_VARIABLE)
-        return variableType == IS_FORMAL_PARAMETER
+            Parametry:
+                - identifier (str): Název proměnné.
 
-    def __str__(self):
-        result = []
-        for className, classSym in self.classes.items():
-            result.append(f"Třída: {className}, rodič: {classSym.parentName}")
-            for selector, methodSym in classSym.methods.items():
-                result.append(
-                    f"  Metoda: {selector}, počet parametrů: {methodSym.get_param_count()}"
-                )
-        result.append("Aktuální scopes:")
-        for i, scope in enumerate(self.scopes):
-            result.append(f"  Scope {i}: {scope}")
-        return "\n".join(result)
+            Návratová hodnota:
+                - bool: `True`, pokud je proměnná definována v aktuálním (horním)
+                        rámci., jinak `False`.
+            """
+            if not self.scopes:
+                return False
+            return identifier in self.top_scope()
+
+        def is_formal_parameter(self, identifier:str) -> bool:
+            """
+            Zjistí, zda je proměnná v aktuálním (horním) rámci formálním parametrem.
+
+            Parametry:
+                - identifier (str): Název proměnné.
+
+            Návratová hodnota:
+                - bool: `True`, pokud je proměnná formálním parametrem, jinak `False`.
+            """
+            if not self.scopes:
+                return False
+
+            topScope = self.top_scope()
+            variableType = topScope.get(identifier, IS_VARIABLE)
+            return variableType == IS_FORMAL_PARAMETER
 
 ### konec souboru 'Symtable.py' ###

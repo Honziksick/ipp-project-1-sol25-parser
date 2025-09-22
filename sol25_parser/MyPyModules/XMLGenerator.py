@@ -1,159 +1,367 @@
 """
 ********************************************************************************
-*                                                                              *
-* Název projektu:   Projekt do předmětu IPP 2024/2025 IFJ24:                   *
+* Název projektu:   Projekt do předmětu IPP 2024/2025:                         *
 *                   Úloha 1 - Analyzátor kódu v SOL25 (parse.py)               *
 *                                                                              *
 * Soubor:           XMLGenerator.py                                            *
 * Autor:            Jan Kalina <xkalinj00>                                     *
 *                                                                              *
 * Datum:            17.02.2025                                                 *
-* Poslední změna:   xx.xx.2025                                                 *
+* Poslední změna:   24.02.2025                                                 *
 *                                                                              *
+* Popis:            Tento soubor obsahuje implementaci generátoru XML pro      *
+*                   jazyk SOL25. Generátor prochází abstraktní syntaktický     *
+*                   strom (AST) a vytváří XML reprezentaci programu.           *
 ********************************************************************************
 """
-"""
-@file XMLGenerator.py
-@author Jan Kalina \<xkalinj00>
 
-@brief
-@details
-"""
-
-import xml.etree.ElementTree as ET
+# Import modulů standardní knihovny
+import re
 from xml.dom import minidom
-from MyPyModules.ASTNodes import ASTNodes as AST
+from xml.etree import ElementTree
 
+# Import vlastních modulů
+from MyPyModules.AbstractSyntaxTree import ASTNodes
+from MyPyModules.CustomErrors import InternalError
+
+#######################################################################
+# Zdroje: https://www.datacamp.com/tutorial/python-xml-elementtree
+#       : https://rowelldionicio.com/parsing-xml-with-python-minidom/
+#######################################################################
 class XMLGenerator:
-    def __init__(self):
-        pass
+    """
+    Třída pro generování XML reprezentace programu v jazyce SOL25.
 
-    def generate_XML(self, ASTRoot, firstComment):
-        attrib = {"language": "SOL25"}
+    Metody:
+        - generate_XML(ASTRoot:ASTNodes.ProgramNode, SOL25Code:str) -> str:
+            - Vytváří XML reprezentaci programu na základě AST a zdrojového kódu.
+
+        - generate_class_tag(classNode:ASTNodes.ClassNode) -> ElementTree.Element:
+            - Generuje element <class> pro uživatelsky definovanou třídu.
+
+        - generate_method_tag(methodNode:ASTNodes.MethodNode) -> ElementTree.Element:
+            - Generuje element <method> pro metodu třídy.
+
+        - generate_block_tag(blockNode:ASTNodes.BlockNode) -> ElementTree.Element:
+            - Generuje element <block> pro blok kódu.
+
+        - generate_assign_tag(assignNode:ASTNodes.AssignNode) -> ElementTree.Element:
+            - Generuje element <assign> pro přiřazení hodnoty proměnné.
+
+        - generate_expression_tag(exprNode:ASTNodes) -> ElementTree.Element:
+            - Generuje element <expr> pro výraz v kódu.
+
+        - generate_literal_tag(literalNode: ASTNodes.LiteralNode) -> ElementTree.Element:
+            - Generuje element <literal> pro literál v kódu.
+
+        - generate_variable_tag(identifierNode: ASTNodes.IdentifierNode) -> ElementTree.Element:
+            - Generuje element <var> pro proměnnou v kódu.
+
+        - generate_send_tag(exprNode: ASTNodes.ExpressionNode) -> ElementTree.Element:
+            - Generuje element <send> pro odeslání zprávy v kódu.
+    """
+
+    def generate_XML(self, ASTRoot:ASTNodes.ProgramNode, SOL25Code:str) -> str:
+        """
+        Generuje XML reprezentaci programu na základě abstraktního syntaktického
+        stromu (AST).
+
+        Parametry:
+            - ASTRoot (ASTNodes.ProgramNode): Kořenový uzel AST.
+            - SOL25Code (str): Zdrojový kód programu v jazyce SOL25.
+
+        Návratová hodnota:
+            - str: Hezky formátovaná XML reprezentace programu v SOL25.
+        """
+        # Vytvoříme slovník s atributy zdrojového kódu.
+        attributes = {"language": "SOL25"}  # definice jazyka programu
+
+        # Vyhledání prvního komentáře v kódu SOL25
+        firstComment = get_first_comment(SOL25Code)
+
+        # Pokud je nalezen komentář, přidáme ho jako atribut "description"
         if firstComment:
-            # Nahrazení mezer a nových řádků entitou &nbsp;
-            desc = firstComment[1:-1].replace("\n", "&nbsp;")
-            attrib["description"] = desc
-        program_el = ET.Element("program", attrib=attrib)
+            description = firstComment
+            attributes["description"] = description
+
+        # Vygenerujeme element <program> s atributy do stromu elementů XML.
+        programTag = ElementTree.Element("program", attributes)
 
         # Pro každou uživatelsky definovanou třídu vytvoříme element <class>.
         order = 1
         for classNode in ASTRoot.classNodeList:
-            class_el = self.generate_class(classNode, order)
-            program_el.append(class_el)
+            classTag = self.generate_class_tag(classNode)
+            programTag.append(classTag)
             order += 1
 
-        # Vrátíme hezky formátovaný XML řetězec s hlavičkou.
-        rough_string = ET.tostring(program_el, encoding="utf-8")
-        reparsed = minidom.parseString(rough_string)
-        xml_bytes = reparsed.toprettyxml(indent="  ", encoding="UTF-8")
-        xml_string = xml_bytes.decode("UTF-8")
-        return xml_string
+        # Převod elementu XML na řetězec.
+        byteXML = ElementTree.tostring(element=programTag, encoding="utf-8")
 
-    def generate_class(self, classNode: AST.ClassNode, order: int) -> ET.Element:
-        # Element <class> s atributy name a parent.
-        attrib = {
-            "name": classNode.id,
-            "parent": classNode.father if classNode.father else ""
+        # Převod řetězcové reprezentace XML na DOM objektovou reprezentaci.
+        reparsedXML = minidom.parseString(byteXML)
+
+        # Override funkce pro zápis hezky formátovaného XML, aby nedocházelo k escapování znaků.
+        def no_escape_write_data(writer, data):
+            writer.write(data)
+        minidom._write_data = no_escape_write_data
+
+        # Zdroj: https://rowelldionicio.com/parsing-xml-with-python-minidom/
+        prettyXML = reparsedXML.toprettyxml(indent="  ", encoding="UTF-8")
+
+        # Dekódování bajtového řetězce na textový řetězec.
+        XMLCode = prettyXML.decode("UTF-8")
+        return XMLCode
+
+    def generate_class_tag(self, classNode:ASTNodes.ClassNode) -> ElementTree.Element:
+        """
+        Generuje XML element <class> pro daný uzel třídy. Každý element <class>
+        obsahuje dva povinné atributy: `name` s identifikátorem třídy a `parent`
+        s identifikátorem nadtřídy (rodiče).
+
+        Parametry:
+            - classNode (ASTNodes.ClassNode): Uzel třídy v AST.
+
+        Návratová hodnota:
+            - ElementTree.Element: XML element <class>.
+        """
+        # Atributem elementu třídy <class> je identifikátor třídy a identifikátor nadtřídy.
+        attributes = {
+            "name": classNode.identifier,
+            "parent": classNode.perentIdentifier
         }
-        class_el = ET.Element("class", attrib=attrib)
-        # Generujeme elementy pro každou definovanou metodu.
+
+        # Přidáme element <class> s atributy do stromu elementů XML.
+        classTag = ElementTree.Element("class", attributes)
+
+        # Vygenerujeme elementy <method> pro každou definovanou metodu dané třídy.
         for methodNode in classNode.methodNodeList:
-            method_el = self.generate_method(methodNode)
-            class_el.append(method_el)
-        return class_el
+            methodTag = self.generate_method_tag(methodNode)
+            classTag.append(methodTag)
+        return classTag
 
-    def generate_method(self, methodNode: AST.MethodNode) -> ET.Element:
-        # Element <method> s atributem selector.
-        attrib = {"selector": methodNode.selector}
-        method_el = ET.Element("method", attrib=attrib)
+    def generate_method_tag(self, methodNode:ASTNodes.MethodNode) -> ElementTree.Element:
+        """
+        Generuje XML element <method> pro daný uzel metody. Element <method>
+        obsahuje povinný atribut `selector` s identifikátorem metody. Při
+        generování některých elementů je třeba definovat pořadí, což se provádí
+        povinným atributem `order`.
+
+        Parametry:
+            - methodNode (ASTNodes.MethodNode): Uzel metody v AST.
+
+        Návratová hodnota:
+            - ElementTree.Element: XML element <method>.
+        """
+        # Metoda je tvořena elementem <method> s atributem 'selector'.
+        attributes = {"selector": methodNode.selector}
+
+        # Vygenerujeme element <method> s atributy do stromu elementů XML.
+        methodTag = ElementTree.Element("method", attributes)
+
         # Tělo metody je reprezentováno blokem.
-        block_el = self.generate_block(methodNode.blockNode)
-        method_el.append(block_el)
-        return method_el
+        blockTag = self.generate_block_tag(methodNode.blockNode)
+        methodTag.append(blockTag)
+        return methodTag
 
-    def generate_block(self, blockNode: AST.BlockNode) -> ET.Element:
-        # Element <block> s atributem arity udávajícím počet parametrů.
-        arity = len(blockNode.paramNodeList) if blockNode.paramNodeList else 0
-        block_el = ET.Element("block", attrib={"arity": str(arity)})
-        # Generujeme podelementy pro každý parametr.
-        param_order = 1
-        for param in blockNode.paramNodeList:
-            param_attrib = {"name": param, "order": str(param_order)}
-            param_el = ET.Element("parameter", attrib=param_attrib)
-            block_el.append(param_el)
-            param_order += 1
-        # Pro každý příkaz (přiřazení) v bloku vytvoříme element <assign>.
-        for stmt in blockNode.statementNodeList:
-            assign_el = self.generate_assign(stmt)
-            block_el.append(assign_el)
-        return block_el
+    def generate_block_tag(self, blockNode:ASTNodes.BlockNode) -> ElementTree.Element:
+        """
+        Generuje XML element <block> pro daný uzel bloku. Element <block>
+        obsahuje podelementy `parameter` pro každý parametr bloku se dvěma
+        povinným atributy `order` a `name` pro pořadí a identifikátor parametru.
+        Dále element <block> obsahuje podelementy pro každý příkaz sekvence
+        příkazů a s atributem arity udávajícím počet očekávaných argumentů.
 
-    def generate_assign(self, assignNode: AST.AssignNode) -> ET.Element:
-        # Element <assign> – podle specifikace nemá atribut order.
-        assign_el = ET.Element("assign")
-        # Podelement <var> pro cílovou proměnnou.
-        var_el = self.generate_var(assignNode.varNode)
-        assign_el.append(var_el)
-        # Podelement <expr> pro výraz přiřazení.
-        expr_el = self.generate_expr(assignNode.exprNode)
-        assign_el.append(expr_el)
-        return assign_el
+        Parametry:
+            - blockNode (ASTNodes.BlockNode): Uzel bloku v AST.
 
-    def generate_expr(self, exprNode) -> ET.Element:
-        # Element <expr> – podle typu uzlu vygenerujeme jeden podelement.
-        expr_el = ET.Element("expr")
-        if isinstance(exprNode, AST.LiteralNode):
-            literal_el = self.generate_literal(exprNode)
-            expr_el.append(literal_el)
-        elif isinstance(exprNode, AST.VarNode):
-            var_el = self.generate_var(exprNode)
-            expr_el.append(var_el)
-        elif isinstance(exprNode, AST.BlockNode):
-            block_el = self.generate_block(exprNode)
-            expr_el.append(block_el)
-        elif isinstance(exprNode, AST.ExprNode):
-            send_el = self.generate_send(exprNode)
-            expr_el.append(send_el)
+        Návratová hodnota:
+            - ElementTree.Element: XML element <block>.
+        """
+        # Zjistíme počet parametrů bloku, pokud je seznam parametrů prázdný, arita je 0.
+        arity = len(blockNode.parameterNodeList) if blockNode.parameterNodeList else 0
+        attributes = {"arity": str(arity)}
+
+        # Vygenerujeme element <block> s atributy do stromu elementů XML.
+        blockTag = ElementTree.Element("block", attributes)
+
+        # Pro každý parametr bloku vytvoříme element <parameter> s atributy 'name' a 'order'.
+        order = 1
+        for param in blockNode.parameterNodeList:
+            attributes = {"order": str(order),
+                          "name": param
+                          }
+            parameterTag = ElementTree.Element("parameter", attributes)
+            blockTag.append(parameterTag)
+            order += 1
+
+        # Pro každý příkaz přiřazení v bloku vytvoříme element <assign>.
+        order = 1
+        for statement in blockNode.statementNodeList:
+            assignTag = self.generate_assign_tag(statement, order)
+            blockTag.append(assignTag)
+            order += 1
+        return blockTag
+
+    def generate_assign_tag(self, assignNode:ASTNodes.AssignNode, order:int) -> ElementTree.Element:
+        """
+        Generuje XML element <assign> pro příkaz. Element <assign> má povinný
+        atribut `order` pro určení pořadí příkazu v sekvenci příkazů. Příkaz
+        zahrnuje dva povinné podelementy `var` s atributem `name` pro identifikátor
+        cílové proměnné a podelement `expr` pro výraz pro výpočet přiřazované hodnoty.
+
+        Parametry:
+            - assignNode (ASTNodes.AssignNode): Uzel příkazu (přiřazení) v AST.
+
+        Návratová hodnota:
+            - ElementTree.Element: XML element <assign>.
+        """
+        # Přidáme element příkazu <assign> do stromu elementů XML.
+        attributes = {"order": str(order)}
+        assignTag = ElementTree.Element("assign", attributes)
+
+        # Vygenerujeme podelement <var> pro proměnnou, do které přiřazujeme.
+        variableTag = self.generate_variable_tag(assignNode.identifierNode)
+        assignTag.append(variableTag)
+
+        # Vygenerujeme podelement <expr> pro výraz, který přiřazujeme.
+        expressionTag = self.generate_expression_tag(assignNode.exprNode)
+        assignTag.append(expressionTag)
+        return assignTag
+
+    def generate_expression_tag(self, exprNode:ASTNodes) -> ElementTree.Element:
+        """
+        Generuje XML element <expr> pro daný uzel výrazu. Výraz obsahuje jeden
+        podelement podle druhu výrazu: (1) literál <literal>, (2) proměnná <var>,
+        (3) blokový literál <block> nebo (4) zaslání zprávy <send>.
+
+        Parametry:
+            - exprNode (ASTNodes): Uzel výrazu v AST.
+
+        Návratová hodnota:
+            - ElementTree.Element: XML element <expr>.
+        """
+        # Přidáme element <expr>, který nemá atributy, do stromu elementů XML.
+        expressionTag = ElementTree.Element("expr")
+
+        # Podle typu uzlu vygenerujeme odpovídající podelement.
+        if isinstance(exprNode, ASTNodes.LiteralNode):
+            literalTag = self.generate_literal_tag(exprNode)  # literál Integer, String, True, False, Nil
+            expressionTag.append(literalTag)
+        elif isinstance(exprNode, ASTNodes.IdentifierNode):
+            variableTag = self.generate_variable_tag(exprNode)  # proměnná | literál třídy
+            expressionTag.append(variableTag)
+        elif isinstance(exprNode, ASTNodes.BlockNode):
+            blockTag = self.generate_block_tag(exprNode)  # zpracujeme blokový literál
+            expressionTag.append(blockTag)
+        elif isinstance(exprNode, ASTNodes.ExpressionNode):
+            sendTag = self.generate_send_tag(exprNode)  # zpracujeme odeslání zprávy
+            expressionTag.append(sendTag)
         else:
-            raise Exception("Neznámý typ výrazového uzlu.")
-        return expr_el
+            raise InternalError(
+                f"Uknown expression node type '{exprNode}' was detected while "
+                f"generating XML output ."
+            )
+        return expressionTag
 
-    def generate_literal(self, literalNode: AST.LiteralNode) -> ET.Element:
-        # Element <literal> s atributy class a value.
-        attrib = {"class": literalNode.literalType, "value": str(literalNode.literalValue)}
-        literal_el = ET.Element("literal", attrib=attrib)
-        return literal_el
+    def generate_literal_tag(self, literalNode: ASTNodes.LiteralNode) -> ElementTree.Element:
+        """
+        Generuje XML element <literal> pro daný uzel literálu. Element <literal>
+        obsahuje dva povinné textové atributy `class` s identifikátorem vestavěné
+        třídy (Integer/String/Nil/True/False) a atribut `value` reprezentující
+        hodnotu literálu.
 
-    def generate_var(self, varNode: AST.VarNode) -> ET.Element:
+        Parametry:
+            - literalNode (ASTNodes.LiteralNode): Uzel literálu v AST.
+
+        Návratová hodnota:
+            - ElementTree.Element: XML element <literal>.
+        """
+        # Atributem elementu literálu <liteal> je třída (typ) literálu a jeho hodnota.
+        attributes = {"class": literalNode.literalType,
+                      "value": str(literalNode.literalValue)
+                      }
+        # Vygenerujeme element <literal> do stromu elementů XML
+        literalTag = ElementTree.Element("literal", attributes)
+        return literalTag
+
+    def generate_variable_tag(self, identifierNode: ASTNodes.IdentifierNode) -> ElementTree.Element:
+        """
+        Generuje XML element <var> nebo <literal> typu `class` pro daný uzel
+        identifikátoru. Element <var> obsahuje povinný atribut `name` s
+        identifikátorem proměnné. Pro vyjádření literálu identifikátoru
+        třídy je `class="class"` a `value` obsahuje identifikátor třídy.
+
+        Parametry:
+            - identifierNode (ASTNodes.IdentifierNode): Uzel identifikátoru v AST.
+
+        Návratová hodnota:
+            - ElementTree.Element: XML element <var> nebo <literal>.
+        """
         # Pokud identifikátor začíná velkým písmenem, interpretujeme ho jako literál třídy.
-        if varNode.id and varNode.id[0].isupper():
-            attrib = {"class": "class", "value": varNode.id}
-            return ET.Element("literal", attrib=attrib)
+        if identifierNode.identifier and identifierNode.identifier[0].isupper():
+            attributes = {"class": "class",
+                          "value": identifierNode.identifier
+                          }
+            return ElementTree.Element("literal", attributes)
+        # Jinak ho považujeme za identifikátor proměnné.
         else:
-            attrib = {"name": varNode.id}
-            return ET.Element("var", attrib=attrib)
+            attributes = {"name": identifierNode.identifier}
+            return ElementTree.Element("var", attributes)
 
-    def generate_send(self, exprNode: AST.ExprNode) -> ET.Element:
-        # Element <send> s atributem selector.
-        attrib = {"selector": exprNode.selector}
-        send_el = ET.Element("send", attrib=attrib)
+    def generate_send_tag(self, exprNode: ASTNodes.ExpressionNode) -> ElementTree.Element:
+        """
+        Generuje XML element <send> pro daný uzel odeslání zprávy. Selektor
+        zprávy je uložen v povinném atributu `selector`. Výraz pro vyhodnocení
+        příjemce je v podelementu <expr> a pokud se jedná o parametrickou zprávu,
+        obsahuje element <send> ještě podelementy <arg> pro každý argument
+        předávaný zprávě. Element <arg> obsahuje právě jeden podelement <expr>
+        pro výraz, jehož vyhodnocením získáme skutečný argument zprávy.
 
-        # Příjemce zprávy: přímo vygenerujeme element <expr> bez dalšího obalení.
-        receiver_expr = self.generate_expr(exprNode.receiver)
-        send_el.append(receiver_expr)
+        Parametry:
+            - exprNode (ASTNodes.ExpressionNode): Uzel odeslání zprávy v AST.
 
-        # Pro každý argument zprávy vytvoříme element <arg> s atributem order.
-        arg_order = 1
-        for arg in exprNode.argNodeList:
-            arg_el = ET.Element("arg", attrib={"order": str(arg_order)})
-            # Přímo vygenerujeme element <expr> pro argument, bez dalšího obalení.
-            arg_expr = self.generate_expr(arg)
-            arg_el.append(arg_expr)
-            send_el.append(arg_el)
-            arg_order += 1
+        Návratová hodnota:
+            - ElementTree.Element: XML element <send>.
+        """
+        # Atributem elementu zprávy <send> je selektor odesílatele zprávy.
+        attributes = {"selector": exprNode.selector}
 
-        return send_el
+        # Vygenerujeme element <send> do stromu elementů XML.
+        sendTag = ElementTree.Element("send", attributes)
 
+        # Příjemcem zpárvy je výraz s elementem <expr>.
+        receiverExpression = self.generate_expression_tag(exprNode.receiver)
+        sendTag.append(receiverExpression)
+
+        # Pro každý argument zprávy vytvoříme element <arg> s atributem `order`.
+        order = 1
+        for argument in exprNode.argNodeList:
+            # Vygenerujeme element <arg> pro argument do stromu elementů XML.
+            attributes = {"order": str(order)}
+            argumentTag = ElementTree.Element("arg", attributes)
+            # Vygenerujeme element <expr> pro výraz argumentu.
+            argumentExpression = self.generate_expression_tag(argument)
+            argumentTag.append(argumentExpression)
+            sendTag.append(argumentTag)  # přidáme argument do zprávy
+            order += 1
+        return sendTag
+
+def get_first_comment(SOL25Code:str) -> str | None:
+    """
+    Vyhledá první komentář v kódu SOL25.
+
+    Parametry:
+        - SOL25Code (str): Zdrojový kód programu v jazyce SOL25.
+
+    Návratová hodnota:
+        - str: První nalezený komentář nebo None, pokud není nalezen.
+    """
+    # Vyhledání prvního komentáře v kódu SOL25
+    match = re.search(r'"(.*?)"', SOL25Code, re.DOTALL)
+    if match:
+        firstComment = match.group(0)
+        return firstComment.strip("\"").replace("\n", "&nbsp;")
+    else:
+        return None
 
 ### konec souboru 'XMLGenerator.py' ###

@@ -1,29 +1,30 @@
 """
 ********************************************************************************
-*                                                                              *
-* Název projektu:   Projekt do předmětu IPP 2024/2025 IFJ24:                   *
+* Název projektu:   Projekt do předmětu IPP 2024/2025:                         *
 *                   Úloha 1 - Analyzátor kódu v SOL25 (parse.py)               *
 *                                                                              *
 * Soubor:           LarkParser.py                                              *
 * Autor:            Jan Kalina <xkalinj00>                                     *
 *                                                                              *
 * Datum:            18.02.2025                                                 *
-* Poslední změna:   xx.xx.2025                                                 *
+* Poslední změna:   23.02.2025                                                 *
 *                                                                              *
+* Popis:            Tento soubor obsahuje implementaci parseru pro jazyk       *
+*                   SOL25 pomocí knihovny Lark. Parser zahrnuje definici       *
+*                   gramatiky, transformace parse stromu na abstraktní         *
+*                   syntaktický strom (AST) a zpracování chyb.                 *
 ********************************************************************************
 """
-"""
-@file LarkParser.py
-@author Jan Kalina \<xkalinj00>
 
-@brief
-@details
-"""
+# Import modulů standardní knihovny
+from typing import Any, List
 
-import re
+# Import modulů instalovaných pomocí 'pip'
 from lark import Lark, Transformer, UnexpectedCharacters, UnexpectedToken, visitors
-from MyPyModules.CustomErrors import LexicalError, SyntaxError
-from MyPyModules.ASTNodes import ASTNodes as AST
+
+# Import vlastních modulů
+from MyPyModules.AbstractSyntaxTree import ASTNodes
+from MyPyModules.CustomErrors import InternalError, LexicalError, SyntacticError
 
 ################################################################################
 #                                                                              #
@@ -55,7 +56,7 @@ from MyPyModules.ASTNodes import ASTNodes as AST
 # %ignore cokoliv  změní význam 'cokoliv' na bílý znak a při parsování odignoruje
 # ==============================================================================
 
-# Konstanta obsahující definici lexikálních a syntaktických pravidel SOL25
+# Konstanta obsahující definici gramatiky, lexikálních a syntaktických pravidel SOL25
 SOL25_GRAMMAR = r"""
     ////////////////////////////////////////////////////////////////////////////
     //                                                                        //
@@ -65,11 +66,11 @@ SOL25_GRAMMAR = r"""
 
     // Klíčová slova
     _CLASS: "class"
-    SELF:  "self"
-    SUPER: "super"
-    NIL:   "nil"
-    TRUE:  "true"
-    FALSE: "false"
+    SELF:   "self"
+    SUPER:  "super"
+    NIL:    "nil"
+    TRUE:   "true"
+    FALSE:  "false"
 
     // Speciální znaky
     _COLON:                ":"
@@ -95,6 +96,8 @@ SOL25_GRAMMAR = r"""
     ID_SELECTOR: /[a-z_][A-Za-z0-9_]*:/
     SELECTOR_ID: /:[a-zA-Z_][A-Za-z0-9_]*/
     CID:         /[A-Z][A-Za-z0-9]*/
+
+
 
     ////////////////////////////////////////////////////////////////////////////
     //                                                                        //
@@ -124,11 +127,11 @@ SOL25_GRAMMAR = r"""
     // Selektory při definici metod
     // ==============================
 
-    // Selector -> <id> | <id:> SelectorTail
+    // Selector -> <identifier> | <identifier:> SelectorTail
     selector: ID
             | ID_SELECTOR selector_tail
 
-    // SelectorTail -> <id:> SelectorTail | ε
+    // SelectorTail -> <identifier:> SelectorTail | ε
     selector_tail: (ID_SELECTOR)*
 
 
@@ -139,10 +142,10 @@ SOL25_GRAMMAR = r"""
     // Block -> [ BlockPar | BlockStat ]
     block: _LEFT_SQUARE_BRACKET block_parameter _PIPE block_statement _RIGHT_SQUARE_BRACKET
 
-    // BlockPar -> <:id> BlockPar | ε
+    // BlockPar -> <:identifier> BlockPar | ε
     block_parameter: (SELECTOR_ID)*
 
-    // BlockStat -> <id> := Expr . BlockStat | ε
+    // BlockStat -> <identifier> := Expr . BlockStat | ε
     block_statement: (ID _WALRUS expression _DOT)*
 
 
@@ -153,14 +156,14 @@ SOL25_GRAMMAR = r"""
     // Expr -> ExprBase ExprTail
     expression: expression_base expression_tail
 
-    // ExprTail -> <id> | ExprSel
+    // ExprTail -> <identifier> | ExprSel
     expression_tail: ID
                    | expression_selector
 
-    // ExprSel -> <id:> ExprBase ExprSel | ε
+    // ExprSel -> <identifier:> ExprBase ExprSel | ε
     expression_selector: (ID_SELECTOR expression_base)*
 
-    // ExprBase -> <int> | <str> | <id> | <Cid> | Block | ( Expr )
+    // ExprBase -> <int> | <str> | <identifier> | <Cid> | Block | ( Expr )
     expression_base: INT_LITERAL
                    | STRING_LITERAL
                    | NIL
@@ -190,253 +193,377 @@ SOL25_GRAMMAR = r"""
 """
 
 
-#####################################################################
 # Zdroj (manuál): lark-parser.readthedocs.io/en/stable/visitors.html
-#####################################################################
-
+# noinspection PyMethodMayBeStatic
 class LarkTransformer(Transformer):
-    def program(self, args):
+    """
+    Třída `LarkTransformer` transformuje výstupní parse strom modulu 'lark' na
+    abstraktní syntaktický strom (AST).
+
+    Metody:
+        - __init__():                Inicializuje instanci třídy `LarkTransformer`.
+        - program(args):             Transformuje pravidlo 'program' na uzel AST.
+        - class_definition(args):    Transformuje pravidlo 'class_definition' na uzel AST.
+        - method_definition(args):   Transformuje pravidlo 'method_definition' na seznam uzlů AST.
+        - selector(args):            Transformuje pravidlo 'selector' na řetězec nebo kombinaci řetězců.
+        - selector_tail(args):       Transformuje pravidlo 'selector_tail' na seznam řetězců.
+        - block(args):               Transformuje pravidlo 'block' na uzel AST.
+        - block_parameter(args):     Transformuje pravidlo 'block_parameter' na seznam řetězců.
+        - block_statement(args):     Transformuje pravidlo 'block_statement' na seznam uzlů AST.
+        - expression(args):          Transformuje pravidlo 'expression' na uzel AST.
+        - expression_tail(args):     Transformuje pravidlo 'expression_tail' na řetězec nebo seznam.
+        - expression_selector(args): Transformuje pravidlo 'expression_selector' na seznam.
+        - expression_base(args):     Transformuje pravidlo 'expression_base' na uzel AST.
+        - INT_LITERAL(token):        Vytvoří uzel AST pro literál typu Integer.
+        - STRING_LITERAL(token):     Vytvoří uzel AST pro literál typu String.
+        - NIL(token):                Vytvoří uzel AST pro literál typu Nil.
+        - TRUE(token):               Vytvoří uzel AST pro literál typu Bool s hodnotou 'true'.
+        - FALSE(token):              Vytvoří uzel AST pro literál typu Bool s hodnotou 'false'.
+        - SELF(token):               Vytvoří uzel AST pro proměnnou 'self'.
+        - SUPER(token):              Vytvoří uzel AST pro proměnnou 'super'.
+        - ID(token):                 Vrátí identifikátor <id> a zkontroluje jeho platnost.
+        - ID_SELECTOR(token):        Vrátí identifikátor <id:> a zkontroluje jeho platnost.
+        - SELECTOR_ID(token):        Vrátí identifikátor <:id> a zkontroluje jeho platnost.
+        - CID(token):                Vrátí identifikátor třídy <Cid> a zkontroluje jeho platnost.
+
+    Parametry metod:
+        - args (list): Seznam argumentů vytvořený parsováním daného pravidla.
+        - token (Token): Token reprezentující daný terminál.
+
+    Návratové hodnoty:
+        - str: Řetězce reprezentující indetifikátory či selektory.
+        - ASTNodes: Specifický uzel AST, který je výsledkem daného pravidla.
+        - list: Seznamy řetězců (str) nebo specifických uzlů AST (ASTNodes).
+    """
+
+    def __init__(self):
+        """
+        Inicializuje instanci třídy `LarkTransformer`.
+
+        Atributy:
+            - _keywords (set): Množina klíčových slov jazyka SOL25.
+        """
+        super().__init__()
+        self._keywords = {"class", "self", "super", "nil", "true", "false"}
+        self._reserved_words = {"Main", "run"}
+
+
+    #######################################
+    # Transformace pravidel (NEterminálů)
+    #######################################
+
+    def program(self, args) -> ASTNodes.ProgramNode:
         """
         Program -> Class Program | ε
         """
-        return AST.ProgramNode(args)
+        return ASTNodes.ProgramNode(args)
 
-    def class_definition(self, args):
+    def class_definition(self, args) -> ASTNodes.ClassNode:
         """
-        Class -> class <Cid> : <Cid> { Method }
+        Class ->  class   <Cid>   :   <Cid>    {   Method   }
+        Class ->         args[0]     args[1]       args[2]
         """
+        # args = [<Cid>, <Cid>, Method]
         classIdentifier = str(args[0])
-        classFather = str(args[1])
+        parentClass     = str(args[1])
         classMethodList = args[2] if len(args) > 2 else []
 
-        # Pokud metoda v pravidle vrací seznam, zajistíme, že máme list
-        #if not isinstance(classMethodList, list):
-        #    classMethodList = [classMethodList]
+        # Raději zajístíme, že výstupem args[2] je skutečně seznam metod
+        if not isinstance(classMethodList, list):
+            classMethodList = [classMethodList]
+        return ASTNodes.ClassNode(classIdentifier, parentClass, classMethodList)
 
-        return AST.ClassNode(classIdentifier, classFather, classMethodList)
-
-    def method_definition(self, args):
+    def method_definition(self, args) -> List[ASTNodes.MethodNode]:
         """
-        Method -> Selector Block Method | ε
+        Method ->  Selector   Block    Method | ε
+        Method ->  args[2k] args[2k+1]
         """
-        # args je seznam s následnými tokeny: [selector, block, selector, block, ...]
+        # args = [selector1, blockNode1, selector2, blockNode2, ..., selectorN, blockNodeN]
         methodList = []
-
         for i in range(0, len(args), 2):
-            methodSelector = args[i]
-            methodBlock = args[i+1]
-            methodList.append(AST.MethodNode(methodSelector, methodBlock))
+            methodSelector = args[i]  # args[2k]
+            methodBlock = args[i + 1]  # args[2k+1]
+            methodList.append(ASTNodes.MethodNode(methodSelector, methodBlock))
         return methodList
 
-    def selector(self, args):
+    def selector(self, args) -> str:
         """
-        Selector -> <id> | <id:> SelectorTail
+        Selector -> <id> |  <id:>  SelectorTail
+        Selector -> args | args[0]   args[1]
         """
-        # Bezparametrický selektor - args[0] se vrací jako string <id>
+        # Bezparametrický selektor '<id>' (tj. `args` není seznam)
         if len(args) == 1:
-            return str(args[0])
+            return str(args[0])  # vracíme `args` jako řetězec
 
-        # Parametrický selektor - args[0] (řetězec) <id:>, args[1] SelectorTail (seznam)
+        # Parametrický selektor '<id:>' (tj. `args` je seznam)
+        # args = [selector, [selector_tail]]
         else:
-            selectorHead = str(args[0])
-            selectorTail = "".join(args[1])  # selector_tail vrací seznam selectorů
+            selectorHead = str(args[0])  # první selektor
+            selectorTail = "".join(args[1])  # seznam dalších slektorů
             return selectorHead + selectorTail
 
-    def selector_tail(self, args):
+    def selector_tail(self, args) -> List[str]:
         """
         SelectorTail -> <id:> SelectorTail | ε
         """
+        # Raději zajístíme, že `args` je skutečně seznamem selektorů
+        if not isinstance(args, list):
+            args = [args]
         return [str(selector) for selector in args]
 
-    def block(self, args):
+    def block(self, args) -> ASTNodes.BlockNode:
         """
         Block -> [ BlockPar | BlockStat ]
         """
         blockParameterList = args[0] if len(args) > 0 else []
         blockStatementList = args[1] if len(args) > 1 else []
-        return AST.BlockNode(blockParameterList, blockStatementList)
+        return ASTNodes.BlockNode(blockParameterList, blockStatementList)
 
-    def block_parameter(self, args):
+    def block_parameter(self, args) -> List[str]:
         """
         BlockPar -> <:id> BlockPar | ε
         """
+        # Raději zajístíme, že `args` je skutečně seznamem selektorů
+        if not isinstance(args, list):
+            args = [args]
         return [str(selector) for selector in args]
 
-    def block_statement(self, args):
+    def block_statement(self, args) -> List[ASTNodes.AssignNode]:
         """
-        BlockStat -> <id> := Expr . BlockStat | ε
+        BlockStat ->   <id>   :=    Expr    . BlockStat | ε
+        BlockStat -> args[2k]    args[2k+1]
         """
+        # args = [<id>1, Expr1, <id>, Expr2, ..., <id>N, ExprN]
         blockStatementList = []
         for i in range(0, len(args) - 1, 2):
-            assignToVariable = args[i]
-            expression = args[i + 1]
-            variableNode = AST.VarNode(str(assignToVariable))
-            assignNode = AST.AssignNode(variableNode, expression)
+            assignToVariable = args[i]      # args[2k]   -> str
+            expression       = args[i + 1]  # args[2k+1] -> Any
+            variableNode     = ASTNodes.IdentifierNode(str(assignToVariable))
+            assignNode       = ASTNodes.AssignNode(variableNode, expression)
             blockStatementList.append(assignNode)
+            if variableNode.identifier in self._reserved_words:
+                raise SyntacticError(f"Identifier can't be reserved word '{assignToVariable}'.")
         return blockStatementList
 
-    def expression(self, args):
+    def expression(self, args) -> ASTNodes.ExpressionNode | None:
         """
-        Expr -> ExprBase ExprTail
+        Expr -> ExprBase  ExprTail
+        Expr ->  args[0]   args[1]
         """
         expressionBase = args[0]
         if len(args) == 1:
             return expressionBase
         else:
             expressionTail = args[1]
-
-            # Buď je expressionTail jednoduché volání metody bez argumentů
-            if isinstance(expressionTail, str):
-                return AST.ExprNode(expressionBase, expressionTail, [])
-
-            # Nebo je expressionTail seznam ve tvaru [ID_SELECTOR, expression_base, ...]
+            # Buď je `expressionTail` jednoduché volání metody bez argumentů (tj. řetězec)
+            if isinstance(expressionTail, str) and len(expressionTail) > 0:
+                return ASTNodes.ExpressionNode(expressionBase, expressionTail, [])
+            # Nebo je `expressionTail` seznam ve tvaru [<id:>1, ExprBase1, ..., <id:>N, ExprBaseN]
             elif isinstance(expressionTail, list):
-                currBase = expressionBase
+                if len(expressionTail) == 0:
+                    return expressionBase
+
+                # Vytváříme zasílání zprávy tak, že "posbíráme" selektory a argumenty.
+                selectors = []
+                args = []
                 for i in range(0, len(expressionTail), 2):
-                    sel = expressionTail[i]
-                    arg = expressionTail[i+1]
-                    currBase = AST.ExprNode(currBase, sel, [arg])
-                return currBase
+                    selectors.append(str(expressionTail[i]))
+                    args.append(expressionTail[i + 1])
 
-            # Pro neučekávané hodnoty (ani str, ani list)
+                # Konkatenace selektorů do jednoho řetězce
+                concatenated = "".join(selectors)
+
+                if ((isinstance(expressionBase, ASTNodes.LiteralNode) or
+                    isinstance(expressionBase, ASTNodes.IdentifierNode) or
+                    isinstance(expressionBase, ASTNodes.BlockNode)) and
+                    len(concatenated) == 0
+                   ):
+                    return expressionBase
+                else:
+                    return ASTNodes.ExpressionNode(expressionBase, concatenated, args)
+
+            # Pro neočekávané hodnoty (ani str, ani list) vyhodíme výjimku
             else:
-                return expressionBase
+                raise InternalError(f"While transforming 'expression', unexpected variable was "
+                                    f"created. Type: {type(expressionTail)}, Value: {expressionTail}"
+                                    )
 
-    def expression_tail(self, args):
+    def expression_tail(self, args) -> Any:
         """
         ExprTail -> <id> | ExprSel
         """
         return args[0]
 
-    def expression_selector(self, args):
+    def expression_selector(self, args) -> List[str | Any]:
         """
-        ExprSel -> <id:> ExprBase ExprSel | ε
+        ExprSel ->  <id:>    ExprBase    ExprSel | ε
+        ExprSel -> args[2k] args[2k+1]
         """
-        # Vrací list, kde každá dvojice je [selector, expression_base]
+        # args = [<id:>1, ExprBase1, <id:>, ExprBase2, ..., <id:>N, ExprBaseN]
         expressionSelector = []
-
         for i in range(0, len(args), 2):
             expressionSelector.append(str(args[i]))
-            expressionSelector.append(args[i+1])
-
+            expressionSelector.append(args[i + 1])
         return expressionSelector
 
-    def expression_base(self, args):
+    def expression_base(self, args) -> ASTNodes:
         """
         ExprBase -> <int> | <str> | <id> | <Cid> | Block | ( Expr )
         """
         if isinstance(args[0], str):
-            return AST.VarNode(args[0])
-        return args[0]
+            if args[0] in self._reserved_words:
+                raise SyntacticError(f"Identifier can't be reserved word '{args[0]}'.")
+            else:
+                return ASTNodes.IdentifierNode(args[0])  # <id> | <Cid>
+        else:
+            return args[0]  # <int> | <str> | Block | ( Expr )
 
-    # --- Tokenové transformace ---
-    def INT_LITERAL(self, token):
-        """
-        Vytvoří uzel AST pro literál typu Integer
-        """
-        return AST.LiteralNode("Integer", int(token))
+    ###################################
+    # Transformace tokenů (terminálů)
+    ###################################
 
-    def STRING_LITERAL(self, token):
+    def INT_LITERAL(self, token) -> ASTNodes.LiteralNode:
         """
-        Vytvoří uzel AST pro literál typu String
+        Vytvoří uzel AST pro literál typu Integer.
+        """
+        return ASTNodes.LiteralNode("Integer", int(token))
+
+    def STRING_LITERAL(self, token) -> ASTNodes.LiteralNode:
+        """
+        Vytvoří uzel AST pro literál typu String.
+        """
+        value = str(token)
+        # Provedeme úpravy hodnoty literálu kvůli následné XML reprezentaci.
+        modifiedValue = (value.strip("'")
+                            .replace("&", "&amp;")
+                            .replace("<", "&lt;")
+                            .replace(">", "&gt;")
+                            .replace("'", "&apos;")
+                            .replace('"', "&quot;"))
+        return ASTNodes.LiteralNode("String", modifiedValue)
+
+    def NIL(self, token) -> ASTNodes.LiteralNode:
+        """
+        Vytvoří uzel AST pro literál typu Nil.
+        """
+        return ASTNodes.LiteralNode("Nil", "nil")
+
+    def TRUE(self, token) -> ASTNodes.LiteralNode:
+        """
+        Vytvoří uzel AST pro literál typu bool s hodnotou 'true'.
+        """
+        return ASTNodes.LiteralNode("True", "true")
+
+    def FALSE(self, token) -> ASTNodes.LiteralNode:
+        """
+        Vytvoří uzel AST pro literál typu bool s hodnotou 'false'.
+        """
+        return ASTNodes.LiteralNode("False", "false")
+
+    def SELF(self, token) -> ASTNodes.IdentifierNode:
+        """
+        Vytvoří uzel AST pro pseudoproměnnou `self`.
+        """
+        return ASTNodes.IdentifierNode("self")
+
+    def SUPER(self, token) -> ASTNodes.IdentifierNode:
+        """
+        Vytvoří uzel AST pro pseudoproměnnou `super`.
+        """
+        return ASTNodes.IdentifierNode("super")
+
+    def ID(self, token) -> str:
+        """
+        Vrátí identifikátor <id> a zkontroluje, že se nejedná o klíčové slovo.
         """
         identifier = str(token)
-        return AST.LiteralNode("String", identifier.strip("'"))
-
-    def NIL(self, token):
-        """
-        Vytvoří uzel AST pro literál typu Nil
-        """
-        return AST.LiteralNode("Nil", None)
-
-    def TRUE(self, token):
-        """
-        Vytvoří uzel AST pro literál typu bool s hodnotou 'true'
-        """
-        return AST.LiteralNode("Bool", True)
-
-    def FALSE(self, token):
-        """
-        Vytvoří uzel AST pro literál typu bool s hodnotou 'false'
-        """
-        return AST.LiteralNode("Bool", False)
-
-    def SELF(self, token):
-        """
-
-        """
-        return AST.VarNode("self")
-
-    def SUPER(self, token):
-        """
-
-        """
-        return AST.VarNode("super")
-
-    def ID(self, token):
-        """
-        Vrátí identifikátor <id> a zkontroluje, že odpovídá regexu: [a-z_][A-Za-z0-9_]*
-        """
-        identifier = str(token)
-        pattern = r'^[a-z_][A-Za-z0-9_]*$'
-        if not re.fullmatch(pattern, identifier):
-            raise LexicalError(f"Neplatný identifikátor <id> '{identifier}'")
+        if identifier in self._keywords:
+            raise SyntacticError(f"Identifier can't be keyword '{identifier}'.")
         return identifier
 
-    def ID_SELECTOR(self, token):
+    def ID_SELECTOR(self, token) -> str:
         """
-        Vrátí identifikátor z původního tokenu <id:> a zkontroluje, že odpovídá
-        regexu: [a-z_][A-Za-z0-9_]*:
+        Vrátí identifikátor z původního tokenu <id:> a zkontroluje,
+        že se nejedná o klíčové slovo.
         """
         identifier = str(token)
-        pattern = r'^[a-z_][A-Za-z0-9_]*:$'
-        if not re.fullmatch(pattern, identifier):
-            raise LexicalError(f"Neplatný identifikátor <id:> '{identifier}'")
+
         return identifier
 
-    def SELECTOR_ID(self, token):
+    def SELECTOR_ID(self, token) -> str:
         """
-        Vrátí identifikátor z původního tokenu <:id> a zkontroluje, že odpovídá
-        regexu: :[a-z_][A-Za-z0-9_]*
+        Vrátí identifikátor z původního tokenu <:id> a zkontroluje,
+        že se nejedná o klíčové slovo. Identifikátor je vrácen bez uvozující dvojtečky.
         """
-        identifier = str(token)
-        pattern = r'^:[a-z_][A-Za-z0-9_]*$'
-        if not re.fullmatch(pattern, identifier):
-            raise LexicalError(f"Neplatný identifikátor <:id> '{identifier}'")
-        return identifier[1:]
-
-    def CID(self, token):
-        """
-        Vrátí identifikátor třidy <Cid> a zkontroluje, že odpovídá
-        regexu: [A-Z][A-Za-z0-9]*
-        """
-        identifier = str(token)
-        pattern = r'^[A-Z][A-Za-z0-9]*$'
-        if not re.fullmatch(pattern, identifier):
-            raise LexicalError(f"Neplatný identifikátor třídy <Cid> '{identifier}'")
+        identifier = str(token)[1:]
+        if identifier in self._keywords or identifier in self._reserved_words:
+            raise SyntacticError(f"Selector can't be keyword '{identifier}'.")
         return identifier
+
+    def CID(self, token) -> str:
+        """
+        Vrátí identifikátor třidy <Cid> a zkontroluje, že se nejedná
+        o klíčové slovo.
+        """
+        identifier = str(token)
+        if identifier in self._keywords:
+            raise SyntacticError(f"Class identifier can't be keyword '{identifier}'.")
+        return identifier
+
 
 class LarkParser:
+    """
+    Třída `LarkParser` je zodpovědná za parsování kódu v jazyce SOL25 pomocí
+    knihovny Lark. Převádí parsovaný kód na abstraktní syntaktický strom (AST)
+    pomocí třídy `LarkTransformer`.
+
+    Atributy:
+        - _larkParser (Lark): Instance 'Lark' parseru inicializovaná gramatikou SOL25.
+        - _ASTBuilder (LarkTransformer): Instance třídy LarkTransformer pro
+                                         transformaci parse stromu na AST.
+    """
+
     def __init__(self):
-        self._larkParser = Lark(SOL25_GRAMMAR, parser="lalr", start="start", debug=True)
+        self._larkParser = Lark(SOL25_GRAMMAR, parser = "lalr", start = "start")
         self._ASTBuilder = LarkTransformer()
 
-    def parse_code(self, SOL25Code):
+    def parse_code(self, SOL25Code) -> ASTNodes.ProgramNode:
+        """
+        Parsuje zadaný kód v jazyce SOL25 a převádí jej na abstraktní
+        syntaktický strom (AST).
+
+        Parametry:
+            - SOL25Code (str): Kód v jazyce SOL25, který má být parsován.
+
+        Návratová hodnota:
+            - ASTNodes.ASTProgram: Kořenový uzel vygenerovaného AST.
+
+        Výjimky:
+            - LexicalError: Pokud se v kódu vyskytují neočekávané znaky.
+            - SyntacticError: Pokud se v kódu vyskytují neočekávané tokeny.
+            - Exception: Pro jakékoli jiné výjimky, které nastanou během
+                         parsování nebo transformace.
+        """
+        # Parsování kódu SOL25 a generování lark parse stromu
         try:
             larkParseTree = self._larkParser.parse(SOL25Code)
         except UnexpectedCharacters as e:
             raise LexicalError() from e
         except UnexpectedToken as e:
-            raise SyntaxError() from e
+            raise SyntacticError() from e
         except Exception:
             raise
 
+        # Transformace lark parse stromu na abstraktní syntaktický strom (AST)
         try:
             ASTRoot = self._ASTBuilder.transform(larkParseTree)
             return ASTRoot
+        # Pokud během transofrmace selhala kontrola regulárním výrazem
         except visitors.VisitError as e:
-            raise LexicalError(str(e.orig_exc.errorDetail)) from e
+            raise SyntacticError(str(e.orig_exc.errorDetail)) from e
+        # Pokud během transformace došlo k jakékoliv jiné chybě
         except Exception:
             raise
 
 ### konec souboru 'LarkParser.py' ###
+

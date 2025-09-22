@@ -1,22 +1,66 @@
-"""
-********************************************************************************
-* Název projektu:   Projekt do předmětu IPP 2024/2025:                         *
-*                   Úloha 1 - Analyzátor kódu v SOL25 (parse.py)               *
-*                                                                              *
-* Soubor:           parse.py                                                   *
-* Autor:            Jan Kalina <xkalinj00>                                     *
-*                                                                              *
-* Datum:            17.02.2025                                                 *
-* Poslední změna:   21.02.2025                                                 *
-*                                                                              *
-* Popis:            Tento skript slouží jako hlavní skript analyzátoru kódu    *
-*                   v SOL25. Jde o tzv. vstupní bod (resp. funkci `main()`).   *
-*                   Tento skript slouží ke zpracování parametrů příkazové      *
-*                   řádky (pomocí `argparse`), načtení analyzovaného           *
-*                   zdrojového kódu ze STDIN a následnému vytvoření třídy      *
-*                   tzv. fasády tvořící rozhraní celého analyzátoru.           *
-********************************************************************************
-"""
+from rich.tree import Tree
+from rich import print
+from MyPyModules.AbstractSyntaxTree import ASTNodes
+
+class ASTVisualizer:
+    def visit_program_node(self, node):
+        tree = Tree("[bold blue]Program")
+        for class_node in node.classNodeList:
+            tree.add(self.visit_class_node(class_node))
+        return tree
+
+    def visit_class_node(self, node):
+        class_tree = Tree(f"[bold magenta]Class: {node.identifier}[/bold magenta] (extends {node.perentIdentifier})")
+        for method in node.methodNodeList:
+            class_tree.add(self.visit_method_node(method))
+        return class_tree
+
+    def visit_method_node(self, node):
+        method_tree = Tree(f"[bold cyan]Method: {node.selector}[/bold cyan]")
+        method_tree.add(self.visit_block_node(node.blockNode))
+        return method_tree
+
+    def visit_block_node(self, node):
+        block_tree = Tree(f"[bold yellow]Block[/bold yellow]")
+        for param in node.parameterNodeList:
+            block_tree.add(self.visit_identifier_node(param))
+        for statement in node.statementNodeList:
+            block_tree.add(self.visit_statement(statement))
+        return block_tree
+
+    def visit_identifier_node(self, node):
+        return Tree(f"[green]Identifier: {node.identifier}[/green]")
+
+    def visit_literal_node(self, node):
+        return Tree(f"[red]Literal ({node.literalType}): {node.literalValue}[/red]")
+
+    def visit_assign_node(self, node):
+        assign_tree = Tree("[bold white]Assignment[/bold white]")
+        assign_tree.add(self.visit_identifier_node(node.identifierNode))
+        assign_tree.add(self.visit_statement(node.exprNode))
+        return assign_tree
+
+    def visit_expression_node(self, node):
+        expr_tree = Tree(f"[bold blue]Expression: {node.selector}[/bold blue]")
+        expr_tree.add(self.visit_statement(node.receiver))
+        for arg in node.argNodeList:
+            expr_tree.add(self.visit_statement(arg))
+        return expr_tree
+
+    def visit_statement(self, node):
+        return node.visit_by(self)  # Dynamické volání podle typu uzlu
+
+# Testovací AST
+program = ASTNodes.ProgramNode([
+    ASTNodes.ClassNode("Main", "Object", [
+        ASTNodes.MethodNode("run", ASTNodes.BlockNode([], [
+            ASTNodes.AssignNode(ASTNodes.IdentifierNode("x"), ASTNodes.LiteralNode("int", 42)),
+            ASTNodes.ExpressionNode(ASTNodes.IdentifierNode("x"), "print", [])
+            ]))
+        ])
+    ])
+
+
 
 # Import modulů standardní knihovny
 import sys  # exit(), stdin.read(), stderr
@@ -75,6 +119,9 @@ class Facade:
         # Provede sémantickou analýzu zdrojového kódu v SOL25
         try:
             self._checker.analyse_semantic(ASTRoot)
+            vizaulizer = ASTVisualizer()
+            tree = vizaulizer.visit_program_node(ASTRoot)
+            print(tree)
         except:
             raise
 

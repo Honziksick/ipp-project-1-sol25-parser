@@ -7,7 +7,7 @@
 # Autor:            Jan Kalina   <xkalinj00>                                   #
 #                                                                              #
 # Datum:            20.02.2025                                                 #
-# Poslední změna:   20.02.2025                                                 #
+# Poslední změna:   10.03.2025                                                 #
 #                                                                              #
 # Popis: Makefile obsahuje cíle sloužící ke spuštění Python skriptu 'parse.py' #
 #        pro zvolený zdrojový soubor v jazyce SOL25. Dále obsahuje cíle určené #
@@ -124,10 +124,12 @@ run:
 ### MC # clean: # Příkaz 'clean' odstraní adresář './build' s objektovými soubory
 clean:
 	rm -rf $(SRC_DIR)/__pycache__
-	rm -rf $(SRC_DIR)/.pytest_cache
 	rm -rf $(MODULE_DIR)/__pycache__
 	rm -rf $(TEST_DIR)/__pycache__
+	rm -rf $(TEST_DIR)/.pytest_cache
+	rm -rf $(TEST_DIR)/xml
 	rm -rf $(PACK_DIR)
+	rm -rf $(PACK_NAME).zip
 
 ### MC # test: # Sestaví knihovny GoogleTest a GoogleMock a spustí test překladače
 ifndef DISABLE_TARGETS
@@ -153,8 +155,10 @@ pack:
 			cp $(PACK_NAME).zip is_it_ok/ && \
 			cp ../$(TEST_DIR)/is_it_ok.sh is_it_ok/ && \
 			cd ./is_it_ok && \
-			./is_it_ok.sh $(PACK_NAME).zip testdir 1; \
+			./is_it_ok.sh $(PACK_NAME).zip testdir 1 || true; \
 	}
+	@mv $(PACK_DIR)/$(PACK_NAME).zip ./$(PACK_NAME).zip
+	@rm -rf $(PACK_DIR)
 else
 pack:
 	@echo "$(COLOR_RED)Cíl 'pack' je zakázán pro odevzdání projektu.$(COLOR_RESET)"
@@ -173,7 +177,7 @@ pack-prepare:
 	@{ \
 		missing_files=0; \
 		if [ -d "$(SRC_DIR)" ]; then \
-			rsync -a --include '*/' --include '*.py' --exclude '*' \
+			rsync -a --include './$(MODULE_DIR)/*.py' --include '$(EXECUTABLE).py' -exclude 'test/' --exclude '*' \
 			--prune-empty-dirs $(SRC_DIR)/ $(ARCHIVE_DIR)/; \
 		else \
 			echo "$(COLOR_RED)Error: Adresář '$(SRC_DIR)' neexistuje.$(COLOR_RESET)"; \
@@ -183,21 +187,22 @@ pack-prepare:
 		else \
 			echo "$(COLOR_RED)Error: Adresář '$(MODULE_DIR)' neexistuje.$(COLOR_RESET)"; \
 		fi; \
-		if [ -d "$(TEST_DIR)" ]; then \
-			rsync -a --include '*/' --include '*.py' --exclude '*' \
-			--prune-empty-dirs $(TEST_DIR)/ $(ARCHIVE_DIR)/test/; \
-		else \
-			echo "$(COLOR_RED)Error: Adresář '$(TEST_DIR)' neexistuje.$(COLOR_RESET)"; \
-		fi; \
-		if [ -f "../rozsireni" ]; then \
-			rsync -a ../rozsireni $(ARCHIVE_DIR)/; \
+		if [ -f "rozsireni" ]; then \
+			rsync -a rozsireni $(ARCHIVE_DIR)/; \
 		else \
 			missing_files=1; \
 		fi; \
-		if [ -f "../readme1.pdf" ]; then \
-			rsync -a ../readme1.pdf $(ARCHIVE_DIR)/; \
-		elif [ -f "../readme1.md" ]; then \
-			rsync -a ../readme1.md $(ARCHIVE_DIR)/; \
+		if [ -f "../doc/readme1.pdf" ]; then \
+			rsync -a ../doc/readme1.pdf $(ARCHIVE_DIR)/; \
+		fi; \
+		if [ -f "../doc/readme1.md" ]; then \
+			rsync -a ../doc/readme1.md $(ARCHIVE_DIR)/; \
+			rsync -a ../doc/img $(ARCHIVE_DIR)/ || true; \
+		fi; \
+		if [ -f "../doc/readme1.pdf" ]; then \
+			true; \
+		elif [ -f "../doc/readme1.md" ]; then \
+			true; \
 		else \
 			missing_files=1; \
 		fi; \
